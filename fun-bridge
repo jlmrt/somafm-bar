@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+set -uo pipefail
+umask 077
+
+# "Fun" engine for SomaFM Bar.
+#
+# Hard-linked to the Omarchy screensaver: run/start raises the screensaver and
+# starts glitching the mpv audio in place; the moment the screensaver is gone
+# (any keystroke or pointer motion dismisses it) the glitch is cleared and the
+# session ends. The glitch itself is a synthetic mpv audio-filter chain applied
+# through the player's IPC socket, so it needs no extra CPU load.
+
+: "${XDG_RUNTIME_DIR:?SomaFM Bar requires XDG_RUNTIME_DIR}"
+runtime_dir="$XDG_RUNTIME_DIR/somafm-bar"
+data_root=${XDG_DATA_HOME:-$HOME/.local/share}
+state_file="$data_root/somafm-bar/state.json"
+airplay_config="$data_root/somafm-bar/airplay.json"
+socket="$runtime_dir/mpvd.sock"
+fun_state="$runtime_dir/fun.json"
+pidfile="$runtime_dir/fun.pid"
+burst_stamp="$runtime_dir/fun-burst.stamp"
+script_self=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
+
+install -d -m 700 "$runtime_dir" "$data_root/somafm-bar"
+
+warn() { printf '%s\n' "$*" >&2; }
+
+screensaver_running() {
+  pgrep -f '[o]rg\.omarchy\.screensaver' >/dev/null 2>&1
+}
+
+bridge_pid() {
+  [[ -s $pidfile ]] || return 1
+  local pid
+  read -r pid < "$pidfile" || return 1
+  [[ $pid =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s\n' "$pid"
+}
+
+send_mpv() {
+  local payload=$1 response
+  [[ -S $socket ]] || return 1
+  payload=$(jq -c '. + {request_id:9101}' <<< "$payload") || return 1
+  response=$(printf '%s\n' "$payload" \
+    | socat -T 1 - "UNIX-CONNECT:$socket" 2>/dev/null \
+    | head -c 65537) || return 1
+  (( $(printf '%s' "$response" | wc -c) <= 65536 )) || return 1
+  jq -e 'select(.request_id == 9101 and .error == "success")' \
+    <<< "$response" >/dev/null 2>&1
+}
+
+set_af() {
+  local af=${1-}
+  send_mpv "$(jq -cn --arg af "$af" '{command:["set_property","af",$af]}')"
+}
+
+current_output() {
+  local output
+  output=$(jq -r '(.output // "") | if type == "string" then . else "" end' \
+    "$state_file" 2>/dev/null) || output=""
+  printf '%s\n' "$output"
+}
+
+is_airplay() {
+  local id=${1-}
+  [[ -n $id && -f $airplay_config ]] || return 1
+  jq -e --arg id "$id" 'any((.targets // [])[]; .id == $id)' \
+    "$airplay_config" >/dev/null 2>&1
+}
+
+# Mode guard: is the glitch allowed on the output that is active right now?
+guard_ok() {
+  local mode=$1 output
+  case $mode in
+    both)
+      return 0
+      ;;
+    local)
+      output=$(current_output)
+      is_airplay "$output" && return 1 || return 0
+      ;;
+    airplay | *)
+      output=$(current_output)
+      is_airplay "$output"
+      ;;
+  esac
+}
+
+af_full() {
+  local intensity=$1 bits samples af
+  bits=$(( 16 - (intensity * 13) / 100 ))
+  (( bits < 3 )) && bits=3
+  samples=$(( 1 + intensity / 25 ))
+  (( samples > 5 )) && samples=5
+  af="acrusher=bits=${bits}:samples=${samples}:mix=0.9"
+  if (( intensity >= 45 )); then
+    af="${af},aecho=0.8:0.55:40|40:0.45|0.3"
+  fi
+  printf '%s' "$af"
+}
+
+af_base() {
+  local intensity=$1 bits
+  bits=$(( 16 - (intensity * 6) / 100 ))
+  (( bits < 8 )) && bits=8
+  printf 'acrusher=bits=%s:mix=0.6' "$bits"
+}
+
+write_state() {
+  local on=$1 mode=$2 driver=$3 intensity=$4 bpm=$5 temporary
+  temporary=$(mktemp "$runtime_dir/fun.XXXXXX")
+  if jq -n --argjson on "$on" --arg mode "$mode" --arg driver "$driver" \
+      --argjson intensity "$intensity" --argjson bpm "$bpm" \
+      '{on:$on, mode:$mode, driver:$driver, intensity:$intensity, bpm:$bpm}' \
+      > "$temporary" 2>/dev/null; then
+    mv "$temporary" "$fun_state"
+  else
+    rm -f "$temporary"
+  fi
+}
+
+print_state() {
+  [[ -f $fun_state ]] && cat "$fun_state" || printf '{"on":false}\n'
+}
+
+# Background worker: owns the glitch loop for one Fun session.
+cmd_run() {
+  local waited=0 full base half on off
+  FUN_MODE=$1
+  FUN_DRIVER=$2
+  FUN_INTENSITY=$3
+  FUN_BPM=$4
+  FUN_PID=$$
+  printf '%s\n' "$FUN_PID" > "$pidfile"
+
+  # Globals (not locals): the EXIT trap runs after this function returns, so
+  # anything it needs must outlive the function scope.
+  cleanup_run() {
+    set_af "" 2>/dev/null || true
+    if [[ -s $pidfile ]] && [[ $(cat "$pidfile" 2>/dev/null) == "$FUN_PID" ]]; then
+      rm -f "$pidfile"
+    fi
+    write_state false "$FUN_MODE" "$FUN_DRIVER" "$FUN_INTENSITY" "$FUN_BPM"
+  }
+  trap cleanup_run EXIT
+  trap 'exit 0' HUP INT TERM
+
+  # Wait for the screensaver window to actually map (launch is asynchronous).
+  while (( waited < 80 )) && ! screensaver_running; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if ! screensaver_running; then
+    exit 0
+  fi
+
+  full=$(af_full "$FUN_INTENSITY")
+  base=$(af_base "$FUN_INTENSITY")
+
+  if [[ $FUN_DRIVER == screensaver ]]; then
+    set_af "$base" || true
+  else
+    set_af "" || true
+  fi
+
+  while screensaver_running && [[ -S $socket ]]; do
+    if ! guard_ok "$FUN_MODE"; then
+      set_af "" || true
+      sleep 0.4
+      continue
+    fi
+    case $FUN_DRIVER in
+      timer)
+        if (( FUN_BPM > 0 )); then
+          half=$(awk -v b="$FUN_BPM" 'BEGIN{printf "%.3f", 30/b}')
+          set_af "$full" || true
+          sleep "$half"
+          set_af "" || true
+          sleep "$half"
+        else
+          set_af "$full" || true
+          sleep 0.5
+        fi
+        ;;
+      *)
+        on=$(awk 'BEGIN{srand();printf "%.2f", 0.06+rand()*0.30}')
+        off=$(awk 'BEGIN{srand();printf "%.2f", 0.35+rand()*1.55}')
+        set_af "$full" || true
+        sleep "$on"
+        set_af "$base" || true
+        sleep "$off"
+        ;;
+    esac
+  done
+}
+
+cmd_start() {
+  local mode=airplay driver=timer intensity=70 bpm=0
+  while (($#)); do
+    case $1 in
+      --mode) mode=${2-airplay}; shift 2 ;;
+      --driver) driver=${2-timer}; shift 2 ;;
+      --intensity) intensity=${2-70}; shift 2 ;;
+      --bpm) bpm=${2-0}; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  [[ $mode =~ ^(airplay|local|both)$ ]] || mode=airplay
+  [[ $driver =~ ^(timer|screensaver)$ ]] || driver=timer
+  [[ $intensity =~ ^[0-9]+$ ]] || intensity=70
+  (( intensity > 100 )) && intensity=100
+  [[ $bpm =~ ^[0-9]+$ ]] || bpm=0
+  (( bpm > 180 )) && bpm=180
+
+  if command -v omarchy-toggle-enabled >/dev/null 2>&1 \
+    && omarchy-toggle-enabled screensaver-off >/dev/null 2>&1; then
+    warn 'Screensaver is disabled (run: omarchy toggle screensaver)'
+    write_state false "$mode" "$driver" "$intensity" "$bpm"
+    return 3
+  fi
+
+  cmd_stop >/dev/null 2>&1 || true
+
+  setsid omarchy-launch-screensaver >/dev/null 2>&1 &
+  setsid "$script_self" _run "$mode" "$driver" "$intensity" "$bpm" \
+    >/dev/null 2>&1 &
+  write_state true "$mode" "$driver" "$intensity" "$bpm"
+  return 0
+}
+
+cmd_stop() {
+  local pid mode=airplay driver=timer intensity=0 bpm=0
+  if [[ -f $fun_state ]]; then
+    mode=$(jq -r '.mode // "airplay"' "$fun_state" 2>/dev/null || echo airplay)
+    driver=$(jq -r '.driver // "timer"' "$fun_state" 2>/dev/null || echo timer)
+    intensity=$(jq -r '.intensity // 0' "$fun_state" 2>/dev/null || echo 0)
+    bpm=$(jq -r '.bpm // 0' "$fun_state" 2>/dev/null || echo 0)
+  fi
+  if pid=$(bridge_pid); then
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.02
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$pidfile"
+  set_af "" 2>/dev/null || true
+  write_state false "$mode" "$driver" "$intensity" "$bpm"
+  return 0
+}
+
+# One-shot glitch burst: a short, escalating stutter used to announce that the
+# screensaver just came up. Refuses to interfere with a running Fun session and
+# is rate-limited so a multi-monitor launch (one window per monitor) bursts
+# only once per cycle.
+cmd_burst() {
+  local intensity=${1-85} steps=8 k i now last=0 on=0.08 off=0.05
+
+  [[ $intensity =~ ^[0-9]+$ ]] || intensity=85
+  (( intensity > 100 )) && intensity=100
+  (( intensity < 40 )) && intensity=40
+
+  # A continuous Fun session already owns the glitch; leave it alone.
+  if [[ -f $fun_state ]] && [[ $(jq -r '.on // false' "$fun_state" 2>/dev/null) == true ]]; then
+    return 0
+  fi
+  bridge_pid >/dev/null 2>&1 && return 0
+  [[ -S $socket ]] || return 1
+
+  now=$(date +%s)
+  [[ -f $burst_stamp ]] && read -r last < "$burst_stamp" 2>/dev/null || last=0
+  [[ $last =~ ^[0-9]+$ ]] || last=0
+  (( now - last < 15 )) && return 0
+  printf '%s\n' "$now" > "$burst_stamp" 2>/dev/null || true
+
+  for ((k = 0; k < steps; k++)); do
+    i=$(( 40 + (intensity - 40) * k / (steps - 1) ))
+    set_af "$(af_full "$i")" || true
+    sleep "$on"
+    set_af "$(af_base 20)" || true
+    sleep "$off"
+  done
+  set_af "" || true
+  return 0
+}
+
+case "${1:-status}" in
+  start) cmd_start "${@:2}" ;;
+  stop) cmd_stop ;;
+  burst) cmd_burst "${2-85}" ;;
+  status) print_state ;;
+  _run) cmd_run "${2-airplay}" "${3-timer}" "${4-70}" "${5-0}" ;;
+  *)
+    warn "Usage: fun-bridge {start [--mode airplay|local|both] [--driver timer|screensaver] [--intensity 0-100] [--bpm 0-180]|stop|burst [intensity]|status}"
+    exit 2
+    ;;
+esac

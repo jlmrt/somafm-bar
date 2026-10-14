@@ -14,6 +14,7 @@ Bar widget for [Omarchy](https://omarchy.org/) that plays a SomaFM station throu
 - Right-click the bar icon stops playback, middle-click toggles play/pause, scroll wheel changes volume in 5% steps.
 - The popup closes on outside click or `Esc`.
 - Volume and audio output are remembered between sessions.
+- A hidden **Fun** mode raises the Omarchy screensaver and glitches the audio along with it — see [Hidden: Fun](#hidden-fun-glitch--screensaver).
 
 Every PipeWire sink shows up in the **Output** list of the card, so the stream can go to the built-in speakers, headphones or a network device such as an AirPlay speaker (Sonos, HomePod, Apple TV). AirPlay 2 receivers configured in `airplay.json` also appear as a dedicated **AirPlay 2 (<name>)** output. Selecting a row switches playback immediately while the stream keeps playing.
 
@@ -145,6 +146,80 @@ Manage favorites headlessly with the player script:
 ./player fav-remove "http://..."              # remove by URL
 ./player switch "Station Name" "http://..."   # switch station
 ```
+
+## Hidden: Fun (glitch + screensaver)
+
+The **Fun** panel is a hidden feature — it does not show up in the popup card
+unless you know the gesture.
+
+<details>
+<summary>Spoiler — click to reveal how to open Fun</summary>
+
+**Press `Super + Ctrl + Shift + F`.** The card opens with the magenta **Fun**
+panel pinned above the Output and station lists; the panel is hidden again as
+soon as the card closes. A plain left click opens the normal card as usual.
+
+The key is not bound for you — add it to `~/.config/hypr/bindings.lua` and run
+`hyprctl reload`:
+
+```lua
+o.bind("SUPER + CTRL + SHIFT + F", "SomaFM Fun", "omarchy-shell io.github.ltillegal.somafm-bar fun")
+```
+
+(`SUPER + SHIFT + F` is Omarchy's **File manager** default, so the extra `Ctrl`
+keeps this hidden key out of the way.)
+
+The hidden entry point is just an IPC target, so you can bind any key (or call
+it by hand):
+
+```bash
+omarchy-shell io.github.ltillegal.somafm-bar fun
+```
+
+`Ctrl + left click` on the icon would be the natural choice, but the bar host
+swallows bar-widget left clicks and re-dispatches them without the modifier, so
+a hotkey is what actually works.
+
+Once revealed, **Glitch: off/on** turns playback into something you can feel: it
+raises the Omarchy screensaver (the `ttfx` full-screen text effects) and, while
+it is on screen, glitches the mpv audio in place. The two are hard-linked — the
+moment the screensaver is dismissed (any keystroke or pointer motion) the glitch
+is cleared and the session ends.
+
+The glitch is synthetic: an `acrusher` (bit/sample-crusher) chain is applied to
+mpv through its IPC socket, so it needs no extra CPU load and works on any
+machine. It is heard on the output that is currently playing.
+
+- **Mode** — which output the glitch may play on: `AirPlay`, `Local`, or `Both`.
+  Audio goes to one sink at a time, so this is a guard: picking `AirPlay` while
+  the stream plays locally leaves the screensaver running but keeps the audio
+  clean. `AirPlay` also matches the synthetic AirPlay 2 outputs.
+- **Driver** — the tempo source. `Timer` fires discrete glitch bursts at the
+  **Rhythm** (bpm; `0` = steady). `Screensaver` keeps a light base glitch with
+  random spikes, mimicking the changing text effects.
+- **Intensity** — how hard the bit/sample reduction bites.
+
+Whenever the screensaver appears — whether the Fun hotkey raised it or the
+machine drifted into idle on its own — the widget announces the transition with
+a short glitch burst: a ~3-second escalating stutter that then clears. It runs
+from a background shell service, so it fires with the popup closed, and it
+stays silent whenever a full Fun session already owns the glitch.
+
+Requirements: the same terminal the Omarchy screensaver needs (Alacritty, Foot,
+Ghostty or Kitty), and the screensaver must be enabled (`omarchy toggle
+screensaver`).
+
+Headless control, through the `player` script:
+
+```bash
+./player fun start --mode airplay --driver timer --intensity 70 --bpm 120
+./player fun start --mode both --driver screensaver --intensity 50 --bpm 0
+./player fun stop
+./player fun burst 90        # one-shot announcement burst, then clean audio
+./player fun status
+```
+
+</details>
 
 ## Keyboard shortcut
 

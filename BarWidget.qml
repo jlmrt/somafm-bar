@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import Quickshell
+import Quickshell.Hyprland
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
@@ -34,6 +35,16 @@ BarWidget {
   property string pendingAction: ""
   property string pendingOutput: ""
 
+  // Fun / glitch: raise the Omarchy screensaver and glitch the audio along with it.
+  // Hidden: the panel only appears when revealed by Ctrl+click on the widget.
+  property bool funRevealed: false
+  property bool funGlitchOn: false
+  property string funMode: "airplay"
+  property string funDriver: "timer"
+  property int funIntensity: 70
+  property int funBpm: 0
+  property color funColor: "#ff4de1"
+
   property var audioOutputs: []
   property string audioOutput: ""
   property string outputsBuffer: ""
@@ -49,6 +60,7 @@ BarWidget {
 
   readonly property string playerPath: Qt.resolvedUrl("player").toString().replace(/^file:\/\//, "")
   readonly property string statusPath: Quickshell.env("XDG_RUNTIME_DIR") + "/somafm-bar/status.json"
+  readonly property string funStatusPath: Quickshell.env("XDG_RUNTIME_DIR") + "/somafm-bar/fun.json"
 
   function singleLineText(value, limit) {
     return String(value || "").replace(/[\r\n\t]+/g, " ").slice(0, limit)
@@ -86,6 +98,16 @@ BarWidget {
     }
   }
 
+  function applyFunState(raw) {
+    try {
+      if (typeof raw !== "string") return
+      var state = JSON.parse(raw || "{}")
+      root.funGlitchOn = state.on === true
+    } catch (error) {
+      return
+    }
+  }
+
   function refreshStatus() {
     if (statusProcess.running) return
     statusProcess.command = [root.playerPath, "status"]
@@ -113,6 +135,37 @@ BarWidget {
     }
     actionProcess.command = [root.playerPath, action]
     actionProcess.running = true
+  }
+
+  function runFunCommand(action) {
+    if (funProcess.running) {
+      funProcess.queued = action
+      return
+    }
+    if (action === "start") {
+      funProcess.command = [root.playerPath, "fun", "start",
+        "--mode", root.funMode, "--driver", root.funDriver,
+        "--intensity", String(root.funIntensity), "--bpm", String(root.funBpm)]
+    } else {
+      funProcess.command = [root.playerPath, "fun", "stop"]
+    }
+    funProcess.running = true
+  }
+
+  function toggleFun() {
+    root.runFunCommand(root.funGlitchOn ? "stop" : "start")
+  }
+
+  function updateFun() {
+    if (root.funGlitchOn) root.runFunCommand("start")
+  }
+
+  function revealFun() {
+    var win = root.QsWindow.window
+    var focused = Hyprland.focusedMonitor
+    if (win && win.screen && focused && focused.name && win.screen.name !== focused.name) return
+    root.funRevealed = true
+    root.open()
   }
 
   function pump() {
@@ -176,6 +229,7 @@ BarWidget {
 
   function close() {
     root.opened = false
+    root.funRevealed = false
   }
 
   function isFavorite(url) {
@@ -240,6 +294,15 @@ BarWidget {
     onFileChanged: reload()
   }
 
+  FileView {
+    path: root.funStatusPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.applyFunState(text())
+    onFileChanged: reload()
+  }
+
   Process {
     id: statusProcess
     command: []
@@ -252,6 +315,20 @@ BarWidget {
       if (exitCode === 0) {
         root.statusReady = true
         root.applyPlayerState(buffer)
+      }
+    }
+  }
+
+  Process {
+    id: funProcess
+    command: []
+    property string queued: ""
+    onExited: function(exitCode) {
+      root.refreshStatus()
+      if (queued !== "") {
+        var next = queued
+        queued = ""
+        Qt.callLater(function() { root.runFunCommand(next) })
       }
     }
   }
@@ -450,6 +527,17 @@ BarWidget {
     }
   }
 
+  // Hidden Fun entry point. One handler wins per plugin id; each live widget
+  // (one per monitor) gets the broadcast and only the focused screen reveals.
+  //   omarchy-shell io.github.ltillegal.somafm-bar fun
+  IpcHandler {
+    target: "io.github.ltillegal.somafm-bar"
+
+    function fun(): void {
+      root.broadcast("revealFun")
+    }
+  }
+
   KeyboardPanel {
     id: popup
     anchorItem: root
@@ -545,6 +633,199 @@ BarWidget {
           }
           onReleased: root.flushVolume()
           onRightClicked: root.runPlayerAction(root.playerRunning ? "toggle" : "play")
+        }
+
+        Column {
+          id: funColumn
+          width: popupColumn.width
+          spacing: Style.spacing.controlGap
+
+          Item {
+            id: funBody
+            width: funColumn.width
+            implicitHeight: root.funRevealed ? funInner.implicitHeight : 0
+
+            Column {
+              id: funInner
+              width: funBody.width
+              spacing: Style.spacing.controlGap
+              visible: root.funRevealed
+
+              Button {
+                id: funToggle
+                width: funInner.width
+                iconText: "\uf0d0"
+                text: root.funGlitchOn ? "Glitch: on" : "Glitch: off"
+                leftAlign: true
+                active: root.funGlitchOn
+                foreground: root.funColor
+                accent: root.funColor
+                onClicked: root.toggleFun()
+              }
+
+              Row {
+                width: funInner.width
+                spacing: Style.spacing.controlGap
+
+                Text {
+                  width: parent.width - funModeRow.width - parent.spacing
+                  text: "Mode"
+                  textFormat: Text.PlainText
+                  color: root.funColor
+                  opacity: 0.7
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Row {
+                  id: funModeRow
+                  spacing: Style.spacing.controlGap
+                  Button {
+                    width: (funInner.width * 0.6 - 2 * Style.spacing.controlGap) / 3
+                    text: "AirPlay"
+                    accent: root.funColor
+                    selected: root.funMode === "airplay"
+                    onClicked: {
+                      root.funMode = "airplay"
+                      root.updateFun()
+                    }
+                  }
+                  Button {
+                    width: (funInner.width * 0.6 - 2 * Style.spacing.controlGap) / 3
+                    text: "Local"
+                    accent: root.funColor
+                    selected: root.funMode === "local"
+                    onClicked: {
+                      root.funMode = "local"
+                      root.updateFun()
+                    }
+                  }
+                  Button {
+                    width: (funInner.width * 0.6 - 2 * Style.spacing.controlGap) / 3
+                    text: "Both"
+                    accent: root.funColor
+                    selected: root.funMode === "both"
+                    onClicked: {
+                      root.funMode = "both"
+                      root.updateFun()
+                    }
+                  }
+                }
+              }
+
+              Row {
+                width: funInner.width
+                spacing: Style.spacing.controlGap
+
+                Text {
+                  width: parent.width - funDriverRow.width - parent.spacing
+                  text: "Driver"
+                  textFormat: Text.PlainText
+                  color: root.funColor
+                  opacity: 0.7
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.bodySmall
+                  anchors.verticalCenter: parent.verticalCenter
+                }
+
+                Row {
+                  id: funDriverRow
+                  spacing: Style.spacing.controlGap
+                  Button {
+                    width: (funInner.width * 0.6 - Style.spacing.controlGap) / 2
+                    text: "Timer"
+                    accent: root.funColor
+                    selected: root.funDriver === "timer"
+                    onClicked: {
+                      root.funDriver = "timer"
+                      root.updateFun()
+                    }
+                  }
+                  Button {
+                    width: (funInner.width * 0.6 - Style.spacing.controlGap) / 2
+                    text: "Screensaver"
+                    accent: root.funColor
+                    selected: root.funDriver === "screensaver"
+                    onClicked: {
+                      root.funDriver = "screensaver"
+                      root.updateFun()
+                    }
+                  }
+                }
+              }
+
+              Text {
+                width: funInner.width
+                text: "Intensity  ·  " + root.funIntensity + "%"
+                textFormat: Text.PlainText
+                color: root.funColor
+                opacity: 0.7
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
+              }
+
+              PanelSlider {
+                id: funIntensitySlider
+                width: funInner.width
+                bar: root.bar
+                value: root.funIntensity
+                minimum: 0
+                maximum: 100
+                step: 5
+                integer: true
+                fillColor: root.funColor
+                knobColor: root.funColor
+                onMoved: function(value) { root.funIntensity = value }
+                onReleased: root.updateFun()
+              }
+
+              Text {
+                width: funInner.width
+                text: "Rhythm  ·  " + (root.funBpm === 0 ? "steady" : root.funBpm + " bpm")
+                textFormat: Text.PlainText
+                color: root.funColor
+                opacity: 0.7
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
+              }
+
+              PanelSlider {
+                id: funBpmSlider
+                width: funInner.width
+                bar: root.bar
+                value: root.funBpm
+                minimum: 0
+                maximum: 180
+                step: 6
+                integer: true
+                fillColor: root.funColor
+                knobColor: root.funColor
+                onMoved: function(value) { root.funBpm = value }
+                onReleased: root.updateFun()
+              }
+
+              Text {
+                width: funInner.width
+                text: "Glitch rides the screensaver and dies with it. Mode picks which output it plays on; Rhythm is the burst tempo (steady at 0 bpm)."
+                textFormat: Text.PlainText
+                color: root.funColor
+                opacity: 0.5
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+            }
+          }
+        }
+
+        PanelSeparator {
+          visible: root.funRevealed
+            && (root.audioOutputs.length > 0 || root.stationsLoaded)
+          foreground: root.funColor
+          strength: 0.55
         }
 
         Column {

@@ -17,29 +17,13 @@ status_script="$script_dir/player-status.lua"
 install -d -m 700 "$runtime_dir" "$data_root/somafm-bar"
 exec 8>"$runtime_dir/player.lock"
 
-station_url() {
-  local url
-  url=$(jq -r '.url // ""' "$script_dir/config.json" 2>/dev/null || true)
-  if [[ $url != http://* && $url != https://* ]]; then
-    url="http://ice6.somafm.com/bossa-128-mp3"
-  fi
-  printf '%s\n' "$url"
-}
-
-station_name() {
-  local name
-  name=$(jq -r '(.station // "") | if type == "string" then . else "" end' \
-    "$script_dir/config.json" 2>/dev/null || true)
-  name=$(printf '%s' "$name" | tr -d '[:cntrl:]' | cut -c1-80)
-  printf '%s\n' "${name:-SomaFM}"
-}
-
 override_file="$data_root/somafm-bar/override.json"
 channels_cache="$data_root/somafm-bar/channels-cache.json"
 favorites_file="$data_root/somafm-bar/favorites.json"
 airplay_config="$data_root/somafm-bar/airplay.json"
 airplay_state="$runtime_dir/airplay.json"
 airplay_bridge_script="$script_dir/airplay-bridge"
+fun_bridge_script="$script_dir/fun-bridge"
 
 load_override() {
   [[ -f $override_file ]] || return 0
@@ -562,7 +546,7 @@ set_output() {
 }
 
 action=${1:-status}
-[[ $action == play || $action == outputs ]] || flock -x 8
+[[ $action == play || $action == outputs || $action == fun ]] || flock -x 8
 
 
 
@@ -717,6 +701,10 @@ case "$action" in
     ;;
   set-station)
     switch_station "${2-}" "${3-}"
+    ;;
+  fun)
+    [[ -x $fun_bridge_script ]] || { echo 'Fun engine is unavailable' >&2; exit 4; }
+    exec "$fun_bridge_script" "${@:2}"
     ;;
   *)
     echo "Unknown action: $action" >&2

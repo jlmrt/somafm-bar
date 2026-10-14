@@ -199,11 +199,16 @@ machine. It is heard on the output that is currently playing.
   random spikes, mimicking the changing text effects.
 - **Intensity** — how hard the bit/sample reduction bites.
 
+Mode, Driver, Intensity and Rhythm are remembered: they are written to
+`~/.local/share/somafm-bar/fun-prefs.json`, so the panel comes back exactly as
+you left it after a shell restart or a reboot.
+
 Whenever the screensaver appears — whether the Fun hotkey raised it or the
 machine drifted into idle on its own — the widget announces the transition with
 a short glitch burst: a ~3-second escalating stutter that then clears. It runs
 from a background shell service, so it fires with the popup closed, and it
-stays silent whenever a full Fun session already owns the glitch.
+stays silent whenever a full Fun session already owns the glitch, the stream is
+paused, or the active output is excluded by **Mode**.
 
 Requirements: the same terminal the Omarchy screensaver needs (Alacritty, Foot,
 Ghostty or Kitty), and the screensaver must be enabled (`omarchy toggle
@@ -214,6 +219,7 @@ Headless control, through the `player` script:
 ```bash
 ./player fun start --mode airplay --driver timer --intensity 70 --bpm 120
 ./player fun start --mode both --driver screensaver --intensity 50 --bpm 0
+./player fun set --intensity 50   # save settings without starting a session
 ./player fun stop
 ./player fun burst 90        # one-shot announcement burst, then clean audio
 ./player fun status

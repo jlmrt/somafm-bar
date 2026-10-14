@@ -61,6 +61,11 @@ BarWidget {
   readonly property string playerPath: Qt.resolvedUrl("player").toString().replace(/^file:\/\//, "")
   readonly property string statusPath: Quickshell.env("XDG_RUNTIME_DIR") + "/somafm-bar/status.json"
   readonly property string funStatusPath: Quickshell.env("XDG_RUNTIME_DIR") + "/somafm-bar/fun.json"
+  readonly property string dataHome: {
+    var dir = Quickshell.env("XDG_DATA_HOME")
+    return (dir && dir.length > 0) ? dir : Quickshell.env("HOME") + "/.local/share"
+  }
+  readonly property string funPrefsPath: dataHome + "/somafm-bar/fun-prefs.json"
 
   function singleLineText(value, limit) {
     return String(value || "").replace(/[\r\n\t]+/g, " ").slice(0, limit)
@@ -108,6 +113,23 @@ BarWidget {
     }
   }
 
+  function applyFunPrefs(raw) {
+    try {
+      if (typeof raw !== "string") return
+      var prefs = JSON.parse(raw || "{}")
+      var mode = String(prefs.mode || "")
+      if (mode === "airplay" || mode === "local" || mode === "both") root.funMode = mode
+      var driver = String(prefs.driver || "")
+      if (driver === "timer" || driver === "screensaver") root.funDriver = driver
+      var intensity = Math.round(Number(prefs.intensity))
+      if (isFinite(intensity)) root.funIntensity = Math.max(0, Math.min(100, intensity))
+      var bpm = Math.round(Number(prefs.bpm))
+      if (isFinite(bpm)) root.funBpm = Math.max(0, Math.min(180, bpm))
+    } catch (error) {
+      return
+    }
+  }
+
   function refreshStatus() {
     if (statusProcess.running) return
     statusProcess.command = [root.playerPath, "status"]
@@ -146,6 +168,10 @@ BarWidget {
       funProcess.command = [root.playerPath, "fun", "start",
         "--mode", root.funMode, "--driver", root.funDriver,
         "--intensity", String(root.funIntensity), "--bpm", String(root.funBpm)]
+    } else if (action === "set") {
+      funProcess.command = [root.playerPath, "fun", "set",
+        "--mode", root.funMode, "--driver", root.funDriver,
+        "--intensity", String(root.funIntensity), "--bpm", String(root.funBpm)]
     } else {
       funProcess.command = [root.playerPath, "fun", "stop"]
     }
@@ -157,7 +183,7 @@ BarWidget {
   }
 
   function updateFun() {
-    if (root.funGlitchOn) root.runFunCommand("start")
+    root.runFunCommand(root.funGlitchOn ? "start" : "set")
   }
 
   function revealFun() {
@@ -300,6 +326,15 @@ BarWidget {
     atomicWrites: true
     printErrors: false
     onLoaded: root.applyFunState(text())
+    onFileChanged: reload()
+  }
+
+  FileView {
+    path: root.funPrefsPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.applyFunPrefs(text())
     onFileChanged: reload()
   }
 

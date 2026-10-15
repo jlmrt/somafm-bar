@@ -4,6 +4,19 @@ All notable changes to SomaFM Bar. The format is loosely based on
 [Keep a Changelog](https://keepachangelog.com/), and versions follow the plugin
 manifest's `version` field.
 
+## [1.9.3]
+
+### Changed
+
+- **AirPlay volume is now instant.** The receiver's own volume is driven through
+  cliairplay's command pipe (`VOLUME=<0-100>` → AP2 `SET_PARAMETER`) instead of
+  riding the mpv volume behind the ~2s stream buffer. `player` keeps mpv at full
+  scale on AirPlay and sends the level to the bridge; the stored volume is
+  re-applied whenever the session starts or resumes, and `status` reports the
+  stored volume (not mpv's 100) while AirPlay is active. The volume slider now
+  also streams while dragging, not just on release.
+- `airplay-bridge`: new `volume <0-100>` command.
+
 ## [1.9.2]
 
 ### Added

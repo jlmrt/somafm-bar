@@ -265,7 +265,7 @@ cmd_start() {
     return 4
   fi
 
-  send_cmd "START_UNIX_MS=$(date +%s%3N)"$'\nACTION=START' || true
+  send_cmd "VOLUME=$(read_volume)"$'\n'"START_UNIX_MS=$(date +%s%3N)"$'\nACTION=START' || true
   event "session-start id=$id ip=$ip src=$feat_src"
   return 0
 }
@@ -281,7 +281,7 @@ cmd_ready() {
   while (( waited < max )); do
     if grep -aq 'Stream SETUP OK' "$blog" 2>/dev/null; then
       disarm_idle
-      send_cmd "START_UNIX_MS=$(date +%s%3N)"$'\nACTION=START' || true
+      send_cmd "VOLUME=$(read_volume)"$'\n'"START_UNIX_MS=$(date +%s%3N)"$'\nACTION=START' || true
       event "session-start id=$id ip=$ip src=$src"
       return 0
     fi
@@ -328,7 +328,17 @@ cmd_pause() {
 cmd_resume() {
   running || return 0
   disarm_idle
-  send_cmd "START_UNIX_MS=$(date +%s%3N)"$'\nACTION=START'
+  send_cmd "VOLUME=$(read_volume)"$'\n'"START_UNIX_MS=$(date +%s%3N)"$'\nACTION=START'
+}
+
+# Real-time receiver volume (AP2 SET_PARAMETER): applied instantly on the
+# device, unlike the mpv volume which sits behind the ~2s AirPlay buffer.
+cmd_volume() {
+  local v=${1-}
+  [[ $v =~ ^[0-9]+$ ]] || return 2
+  (( v > 100 )) && v=100
+  running || return 0
+  send_cmd "VOLUME=$v"
 }
 
 cmd_status() {
@@ -349,7 +359,8 @@ case "${1:-status}" in
   park) cmd_park ;;
   pause) cmd_pause ;;
   resume) cmd_resume ;;
+  volume) cmd_volume "${2-}" ;;
   running) running ;;
   status) cmd_status ;;
-  *) warn "Usage: airplay-bridge {start <id>|stop|disconnect|park|pause|resume|running|status}"; exit 2 ;;
+  *) warn "Usage: airplay-bridge {start <id>|stop|disconnect|park|pause|resume|volume <0-100>|running|status}"; exit 2 ;;
 esac

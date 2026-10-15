@@ -669,6 +669,7 @@ BarWidget {
           onMoved: function(value) {
             root.pendingVolume = value
             root.playerVolume = value
+            root.flushVolume()
           }
           onReleased: root.flushVolume()
           onRightClicked: root.runPlayerAction(root.playerRunning ? "toggle" : "play")

@@ -95,6 +95,8 @@ Newer Apple receivers (macOS Ventura and later, HomePod, Apple TV) refuse the le
 
 It creates a private PipeWire null-sink named after the target and pipes that sink's monitor into `cliairplay`, so playback, pause/resume, volume and output switching behave like any other sink. The session is always torn down with a graceful AirPlay `STOP`.
 
+While an AirPlay 2 output is active the level is applied on the **receiver** itself (AP2 `SET_PARAMETER`), so moving the slider is heard immediately instead of lagging behind the stream's ~2s buffer. `mpv` is held at full scale and the remembered volume lives in `state.json`, exactly as for local outputs.
+
 Requirements:
 
 - `python3` — used to read the receiver's `GET /info` `features`; optional, falls back to the `txt` field below.

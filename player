@@ -277,14 +277,19 @@ status() {
     return
   fi
 
-  printf '%s\n' "$(jq -sc --arg station "$(station_name)" --arg url "$(station_url)" '
+  local airplay_live="" airplay_rid
+  airplay_rid=$(airplay_running_id)
+  [[ -n $airplay_rid ]] && is_airplay_output "$airplay_rid" && airplay_live=1
+
+  printf '%s\n' "$(jq -sc --arg station "$(station_name)" --arg url "$(station_url)" \
+    --arg airplay "${airplay_live:-0}" --argjson storedvol "$(configured_volume)" '
     {
       running: (([.[] | select(.request_id == 6) | .data][0] // false) == false),
       paused: ([.[] | select(.request_id == 1) | .data][0] // false),
       muted: ([.[] | select(.request_id == 4) | .data][0] // false),
       title: (([.[] | select(.request_id == 2) | .data][0] // "")
         | if type == "string" then gsub("[\\r\\n\\t]"; " ")[:512] else "" end),
-      volume: ([.[] | select(.request_id == 3) | .data][0] // 70),
+      volume: (if $airplay == "1" then $storedvol else ([.[] | select(.request_id == 3) | .data][0] // 70) end),
       output: (([.[] | select(.request_id == 5) | .data][0] // "")
         | if type == "string" then (if . == "auto" then "" else sub("^pipewire/"; "") end) else "" end),
       url: $url,
@@ -308,6 +313,12 @@ player_command() {
 start_player() {
   local url
   url=$(station_url)
+  # AirPlay owns the level via its receiver volume, so mpv stays at full scale;
+  # any other output uses the stored volume directly.
+  local selected_output mpv_volume
+  selected_output=$(resolved_configured_output)
+  mpv_volume=$(configured_volume)
+  if is_airplay_output "$selected_output"; then mpv_volume=100; fi
   local -a player_arguments=(
     mpv
     --no-video
@@ -318,7 +329,7 @@ start_player() {
     --demuxer-max-bytes=8MiB
     --demuxer-max-back-bytes=2MiB
     --network-timeout=30
-    --volume="$(configured_volume)"
+    --volume="$mpv_volume"
     --volume-max=100
     --input-ipc-server="$socket"
     --script="$status_script"
@@ -326,8 +337,6 @@ start_player() {
     --really-quiet
     "$url"
   )
-  local selected_output
-  selected_output=$(resolved_configured_output)
   if [[ -n $selected_output ]]; then
     if is_airplay_output "$selected_output" && ! start_airplay_output "$selected_output"; then
       exit 4
@@ -436,9 +445,20 @@ set_volume() {
     || jq -S -n --argjson volume "$volume" '{volume: $volume}' > "$temporary"
   mv "$temporary" "$state_file"
 
+  # AirPlay: drive the receiver's own volume (SET_PARAMETER) so the change is
+  # heard immediately instead of lagging behind the ~2s stream buffer. Keep mpv
+  # at full scale so the receiver gain is the only level control.
+  local airplay_live="" airplay_rid
+  airplay_rid=$(airplay_running_id)
+  if [[ -n $airplay_rid ]] && is_airplay_output "$airplay_rid"; then
+    airplay_live=1
+    airplay_bridge volume "$volume" >/dev/null 2>&1 || true
+  fi
+
   if [[ -S $socket ]]; then
-    local command
-    command=$(jq -cn --argjson volume "$volume" '{command:["set_property","volume",$volume]}')
+    local command target_volume=$volume
+    (( airplay_live )) && target_volume=100
+    command=$(jq -cn --argjson volume "$target_volume" '{command:["set_property","volume",$volume]}')
     if ! send_command "$command"; then
       status >/dev/null
       if [[ -S $socket ]]; then
@@ -530,6 +550,13 @@ set_output() {
         exit 4
       fi
     fi
+    # Keep mpv's level right for the new output: full scale on AirPlay (the
+    # receiver volume is the control), the stored volume everywhere else.
+    local synced_volume target_volume
+    target_volume=$(configured_volume)
+    is_airplay_output "$requested" && target_volume=100
+    synced_volume=$(jq -cn --argjson volume "$target_volume" '{command:["set_property","volume",$volume]}')
+    send_command "$synced_volume" >/dev/null 2>&1 || true
   fi
 
   # Tear the old AirPlay session down only after mpv has been moved off its

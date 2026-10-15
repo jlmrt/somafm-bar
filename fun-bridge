@@ -27,6 +27,8 @@ install -d -m 700 "$runtime_dir" "$data_root/somafm-bar"
 
 warn() { printf '%s\n' "$*" >&2; }
 
+command -v jq >/dev/null 2>&1 || { warn "fun-bridge requires 'jq'"; exit 5; }
+
 screensaver_running() {
   pgrep -f '[o]rg\.omarchy\.screensaver' >/dev/null 2>&1
 }
@@ -129,24 +131,37 @@ print_state() {
 # Last-used settings, persisted in the data dir so they survive a reboot (the
 # runtime state file is wiped on logout). Absent/short file falls back.
 pref_field() {
-  local field=$1 fallback=$2 value=""
+  local field=$1 fallback=$2 value="" exists=""
   if [[ -f $fun_prefs ]]; then
-    value=$(jq -r --arg f "$field" '.[$f] // empty' "$fun_prefs" 2>/dev/null) || value=""
+    exists=$(jq -r --arg f "$field" 'has($f)' "$fun_prefs" 2>/dev/null) || exists=""
+    if [[ $exists == true ]]; then
+      value=$(jq -r --arg f "$field" '.[$f]' "$fun_prefs" 2>/dev/null) || value=""
+    fi
   fi
   [[ -n $value ]] && printf '%s\n' "$value" || printf '%s\n' "$fallback"
 }
 
 write_prefs() {
-  local mode=$1 driver=$2 intensity=$3 bpm=$4 temporary
+  local mode=$1 driver=$2 intensity=$3 bpm=$4 announce=$5 temporary
   temporary=$(mktemp "$data_root/somafm-bar/fun-pre.XXXXXX")
   if jq -n --arg mode "$mode" --arg driver "$driver" \
       --argjson intensity "$intensity" --argjson bpm "$bpm" \
-      '{mode:$mode, driver:$driver, intensity:$intensity, bpm:$bpm}' \
+      --argjson announce "$announce" \
+      '{mode:$mode, driver:$driver, intensity:$intensity, bpm:$bpm, announce:$announce}' \
       > "$temporary" 2>/dev/null; then
     mv "$temporary" "$fun_prefs"
   else
     rm -f "$temporary"
   fi
+}
+
+# Normalise an on/off (or true/false) token to a bare true/false for jq.
+as_bool() {
+  case $1 in
+    on | true) printf 'true\n' ;;
+    off | false) printf 'false\n' ;;
+    *) printf '\n' ;;
+  esac
 }
 
 # Is the station actually audible right now? A burst on a stopped/paused stream
@@ -228,17 +243,19 @@ cmd_run() {
 }
 
 cmd_start() {
-  local mode driver intensity bpm
+  local mode driver intensity bpm announce
   mode=$(pref_field mode airplay)
   driver=$(pref_field driver timer)
   intensity=$(pref_field intensity 70)
   bpm=$(pref_field bpm 0)
+  announce=$(pref_field announce true)
   while (($#)); do
     case $1 in
       --mode) mode=${2-airplay}; shift 2 ;;
       --driver) driver=${2-timer}; shift 2 ;;
       --intensity) intensity=${2-70}; shift 2 ;;
       --bpm) bpm=${2-0}; shift 2 ;;
+      --announce) announce=${2-true}; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -249,8 +266,10 @@ cmd_start() {
   (( intensity > 100 )) && intensity=100
   [[ $bpm =~ ^[0-9]+$ ]] || bpm=0
   (( bpm > 180 )) && bpm=180
+  announce=$(as_bool "$announce")
+  [[ -n $announce ]] || announce=true
 
-  write_prefs "$mode" "$driver" "$intensity" "$bpm"
+  write_prefs "$mode" "$driver" "$intensity" "$bpm" "$announce"
 
   if command -v omarchy-toggle-enabled >/dev/null 2>&1 \
     && omarchy-toggle-enabled screensaver-off >/dev/null 2>&1; then
@@ -298,17 +317,19 @@ cmd_stop() {
 # so slider changes survive a shell restart. Mirrors into the live session file
 # when a session is running, to keep `status` (and the widget) consistent.
 cmd_set() {
-  local mode driver intensity bpm
+  local mode driver intensity bpm announce
   mode=$(pref_field mode airplay)
   driver=$(pref_field driver timer)
   intensity=$(pref_field intensity 70)
   bpm=$(pref_field bpm 0)
+  announce=$(pref_field announce true)
   while (($#)); do
     case $1 in
       --mode) mode=${2-airplay}; shift 2 ;;
       --driver) driver=${2-timer}; shift 2 ;;
       --intensity) intensity=${2-70}; shift 2 ;;
       --bpm) bpm=${2-0}; shift 2 ;;
+      --announce) announce=${2-true}; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -319,8 +340,10 @@ cmd_set() {
   (( intensity > 100 )) && intensity=100
   [[ $bpm =~ ^[0-9]+$ ]] || bpm=0
   (( bpm > 180 )) && bpm=180
+  announce=$(as_bool "$announce")
+  [[ -n $announce ]] || announce=true
 
-  write_prefs "$mode" "$driver" "$intensity" "$bpm"
+  write_prefs "$mode" "$driver" "$intensity" "$bpm" "$announce"
   if [[ -f $fun_state ]] && [[ $(jq -r '.on // false' "$fun_state" 2>/dev/null) == true ]]; then
     write_state true "$mode" "$driver" "$intensity" "$bpm"
   fi
@@ -344,6 +367,8 @@ cmd_burst() {
   fi
   bridge_pid >/dev/null 2>&1 && return 0
   [[ -S $socket ]] || return 1
+  # The user can switch the automatic announce off entirely.
+  [[ $(pref_field announce true) == true ]] || return 0
   # Nothing to announce if the stream is silent or the active output is excluded
   # by the saved Mode. Return before stamping, so a later idle can still burst.
   is_playing || return 0
@@ -374,7 +399,7 @@ case "${1:-status}" in
   status) print_state ;;
   _run) cmd_run "${2-airplay}" "${3-timer}" "${4-70}" "${5-0}" ;;
   *)
-    warn "Usage: fun-bridge {start|set [--mode airplay|local|both] [--driver timer|screensaver] [--intensity 0-100] [--bpm 0-180]|stop|burst [intensity]|status}"
+    warn "Usage: fun-bridge {start|set [--mode airplay|local|both] [--driver timer|screensaver] [--intensity 0-100] [--bpm 0-180] [--announce on|off]|stop|burst [intensity]|status}"
     exit 2
     ;;
 esac

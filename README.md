@@ -198,8 +198,9 @@ machine. It is heard on the output that is currently playing.
   **Rhythm** (bpm; `0` = steady). `Screensaver` keeps a light base glitch with
   random spikes, mimicking the changing text effects.
 - **Intensity** — how hard the bit/sample reduction bites.
+- **Announce** — whether the automatic entrance burst (below) fires at all.
 
-Mode, Driver, Intensity and Rhythm are remembered: they are written to
+Mode, Driver, Intensity, Rhythm and Announce are remembered: they are written to
 `~/.local/share/somafm-bar/fun-prefs.json`, so the panel comes back exactly as
 you left it after a shell restart or a reboot.
 
@@ -208,7 +209,9 @@ machine drifted into idle on its own — the widget announces the transition wit
 a short glitch burst: a ~3-second escalating stutter that then clears. It runs
 from a background shell service, so it fires with the popup closed, and it
 stays silent whenever a full Fun session already owns the glitch, the stream is
-paused, or the active output is excluded by **Mode**.
+paused, or the active output is excluded by **Mode**. Turn it off with the
+**Announce** toggle in the panel (or `./player fun set --announce off`) if the
+idle transition should stay quiet.
 
 Requirements: the same terminal the Omarchy screensaver needs (Alacritty, Foot,
 Ghostty or Kitty), and the screensaver must be enabled (`omarchy toggle
@@ -220,6 +223,7 @@ Headless control, through the `player` script:
 ./player fun start --mode airplay --driver timer --intensity 70 --bpm 120
 ./player fun start --mode both --driver screensaver --intensity 50 --bpm 0
 ./player fun set --intensity 50   # save settings without starting a session
+./player fun set --announce off   # silence the automatic entrance burst
 ./player fun stop
 ./player fun burst 90        # one-shot announcement burst, then clean audio
 ./player fun status

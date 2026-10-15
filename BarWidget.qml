@@ -43,6 +43,7 @@ BarWidget {
   property string funDriver: "timer"
   property int funIntensity: 70
   property int funBpm: 0
+  property bool funAnnounce: true
   property color funColor: "#ff4de1"
 
   property var audioOutputs: []
@@ -125,6 +126,7 @@ BarWidget {
       if (isFinite(intensity)) root.funIntensity = Math.max(0, Math.min(100, intensity))
       var bpm = Math.round(Number(prefs.bpm))
       if (isFinite(bpm)) root.funBpm = Math.max(0, Math.min(180, bpm))
+      if (typeof prefs.announce === "boolean") root.funAnnounce = prefs.announce
     } catch (error) {
       return
     }
@@ -167,11 +169,13 @@ BarWidget {
     if (action === "start") {
       funProcess.command = [root.playerPath, "fun", "start",
         "--mode", root.funMode, "--driver", root.funDriver,
-        "--intensity", String(root.funIntensity), "--bpm", String(root.funBpm)]
+        "--intensity", String(root.funIntensity), "--bpm", String(root.funBpm),
+        "--announce", root.funAnnounce ? "on" : "off"]
     } else if (action === "set") {
       funProcess.command = [root.playerPath, "fun", "set",
         "--mode", root.funMode, "--driver", root.funDriver,
-        "--intensity", String(root.funIntensity), "--bpm", String(root.funBpm)]
+        "--intensity", String(root.funIntensity), "--bpm", String(root.funBpm),
+        "--announce", root.funAnnounce ? "on" : "off"]
     } else {
       funProcess.command = [root.playerPath, "fun", "stop"]
     }
@@ -696,6 +700,21 @@ BarWidget {
                 foreground: root.funColor
                 accent: root.funColor
                 onClicked: root.toggleFun()
+              }
+
+              Button {
+                id: funAnnounceToggle
+                width: funInner.width
+                iconText: "\uf0f3"
+                text: root.funAnnounce ? "Announce: on" : "Announce: off"
+                leftAlign: true
+                active: root.funAnnounce
+                foreground: root.funColor
+                accent: root.funColor
+                onClicked: {
+                  root.funAnnounce = !root.funAnnounce
+                  root.updateFun()
+                }
               }
 
               Row {

@@ -81,17 +81,23 @@ BarWidget {
     return label.length > 30 ? label.slice(0, 29) + "…" : label
   }
 
-  function applyPlayerState(raw) {
+  function applyPlayerState(raw, withVolume) {
     try {
       if (typeof raw !== "string" || raw.length > 65536) return
       var state = JSON.parse(raw || "{}")
       root.playerRunning = state.running === true
       root.playerPaused = state.paused === true
       root.playerMuted = state.muted === true
-      var nextVolume = Math.round(Number(state.volume === undefined ? 70 : state.volume))
-      root.reportedVolume = isFinite(nextVolume)
-        ? Math.max(0, Math.min(100, nextVolume)) : 70
-      if (root.pendingVolume < 0) root.playerVolume = root.reportedVolume
+      // The live status.json reports mpv's own volume, which on AirPlay is
+      // pinned at 100 while the receiver owns the level. Only trust volume from
+      // `player status`, which knows the effective value; otherwise the knob
+      // flips between the two sources.
+      if (withVolume !== false) {
+        var nextVolume = Math.round(Number(state.volume === undefined ? 70 : state.volume))
+        root.reportedVolume = isFinite(nextVolume)
+          ? Math.max(0, Math.min(100, nextVolume)) : 70
+        if (root.pendingVolume < 0) root.playerVolume = root.reportedVolume
+      }
       root.playerTitle = root.singleLineText(
         state.title || "", 160)
       var nextUrl = root.singleLineText(state.url || "", 200)
@@ -320,7 +326,7 @@ BarWidget {
     watchChanges: true
     atomicWrites: true
     printErrors: false
-    onLoaded: root.applyPlayerState(text())
+    onLoaded: root.applyPlayerState(text(), false)
     onFileChanged: reload()
   }
 

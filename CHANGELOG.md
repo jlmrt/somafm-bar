@@ -4,6 +4,15 @@ All notable changes to SomaFM Bar. The format is loosely based on
 [Keep a Changelog](https://keepachangelog.com/), and versions follow the plugin
 manifest's `version` field.
 
+## [1.9.4]
+
+### Fixed
+
+- The volume slider no longer jumps back and forth on AirPlay. Two sources fed
+  the slider: `player status` (the effective volume) and the live `status.json`
+  file, which reports mpv's own volume — pinned at 100 on AirPlay. The latter no
+  longer drives the slider, so the effective volume is the single source.
+
 ## [1.9.3]
 
 ### Changed

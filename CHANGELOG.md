@@ -4,6 +4,20 @@ All notable changes to SomaFM Bar. The format is loosely based on
 [Keep a Changelog](https://keepachangelog.com/), and versions follow the plugin
 manifest's `version` field.
 
+## [1.10.0]
+
+### Added
+
+- **Local fallback when AirPlay cannot start.** If an AirPlay 2 session cannot be
+  established — an unreachable receiver, or one that stops answering the session
+  `SETUP` (the ap2 `SETUP` times out / RAOP answers `403`) — playback now
+  continues on a local sink instead of going silent, with a notification naming
+  the fallback. The remembered output is left on AirPlay and retried on the next
+  fresh start; choosing an output, stopping, or a successful session clears the
+  fallback. A detached watcher covers the async handshake, while immediate
+  failures (refused port, missing host) fall back at once. Set
+  `SOMAFM_AIRPLAY_FALLBACK=0` to disable.
+
 ## [1.9.4]
 
 ### Fixed

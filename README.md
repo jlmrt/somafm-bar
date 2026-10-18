@@ -97,6 +97,8 @@ It creates a private PipeWire null-sink named after the target and pipes that si
 
 While an AirPlay 2 output is active the level is applied on the **receiver** itself (AP2 `SET_PARAMETER`), so moving the slider is heard immediately instead of lagging behind the stream's ~2s buffer. `mpv` is held at full scale and the remembered volume lives in `state.json`, exactly as for local outputs.
 
+If a session cannot be established — the receiver is unreachable, or it stops answering the session `SETUP` (a receiver-side hiccup that leaves `ping`, mDNS and HTTP working while `SETUP` times out, or answers RAOP with `403`) — playback falls back to a local sink so audio keeps playing, and a notification names the fallback. The remembered output stays on AirPlay and is retried on the next fresh start; choosing an output, stopping, or a successful session clears it. Set `SOMAFM_AIRPLAY_FALLBACK=0` to disable.
+
 Requirements:
 
 - `python3` — used to read the receiver's `GET /info` `features`; optional, falls back to the `txt` field below.

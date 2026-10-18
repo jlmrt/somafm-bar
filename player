@@ -10,9 +10,11 @@ socket="$runtime_dir/mpvd.sock"
 status_file="$runtime_dir/status.json"
 pid_file="$runtime_dir/player.pid"
 log_file="$runtime_dir/mpv.log"
+fallback_file="$runtime_dir/output.override"
 max_json_bytes=4194304
 max_ipc_bytes=65536
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+script_self=$(readlink -f "${BASH_SOURCE[0]}")
 status_script="$script_dir/player-status.lua"
 install -d -m 700 "$runtime_dir" "$data_root/somafm-bar"
 exec 8>"$runtime_dir/player.lock"
@@ -170,8 +172,89 @@ resolve_output() {
   if [[ -n $match ]]; then printf '%s\n' "$match"; else printf '%s\n' "$requested"; fi
 }
 
+override_output() {
+  [[ -s $fallback_file ]] || return 0
+  local id
+  read -r id < "$fallback_file" || return 0
+  [[ $id =~ ^[A-Za-z0-9._:+-]{1,160}$ ]] || return 0
+  printf '%s\n' "$id"
+}
+
+clear_override() {
+  rm -f "$fallback_file"
+}
+
 resolved_configured_output() {
+  local override
+  override=$(override_output)
+  if [[ -n $override ]]; then
+    resolve_output "$override"
+    return 0
+  fi
   resolve_output "$(configured_output)"
+}
+
+# First non-AirPlay sink, preferring the current PipeWire default. Used as the
+# target when an AirPlay session cannot be established.
+local_output_id() {
+  local default
+  default=$(pactl get-default-sink 2>/dev/null || true)
+  if [[ -n $default ]] && ! is_airplay_output "$default"; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  local available
+  available=$(list_outputs 2>/dev/null) || return 1
+  jq -r --argjson airplay "$(airplay_targets_json)" '
+    (.outputs // []) | map(.id) as $ids
+    | ($airplay | map(.id)) as $air
+    | ([ $ids[] | select(. as $i | ($air | index($i)) | not) ][0] // "")' \
+    <<< "$available" 2>/dev/null
+}
+
+notify_airplay_fallback() {
+  local message="AirPlay output is unavailable - playing on the built-in speakers"
+  if command -v omarchy-notification-send >/dev/null 2>&1; then
+    omarchy-notification-send -u normal "SomaFM" "$message" >/dev/null 2>&1 || true
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "SomaFM" "$message" >/dev/null 2>&1 || true
+  fi
+}
+
+# Detached companion to an async AirPlay start: waits for the session to come
+# up and, if it never does, falls back to a local output so audio still plays.
+airplay_watch() {
+  local airplay_id=$1 local_id=$2
+  [[ -n $airplay_id && -n $local_id ]] || return 0
+  [[ ${SOMAFM_AIRPLAY_FALLBACK:-1} == 0 ]] && return 0
+  local waited=0
+  while (( waited < 300 )); do
+    if grep -aq 'Stream SETUP OK' "$runtime_dir/airplay.log" 2>/dev/null; then
+      clear_override
+      return 0
+    fi
+    airplay_bridge running >/dev/null 2>&1 || break
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if airplay_bridge running >/dev/null 2>&1; then
+    clear_override
+    return 0
+  fi
+  [[ $(configured_output) == "$airplay_id" ]] || return 0
+  is_airplay_output "$airplay_id" || return 0
+  exec "$script_self" _fallback "$local_id"
+}
+
+airplay_fallback() {
+  local local_id=$1
+  [[ -n $local_id ]] || return 0
+  [[ -z $(override_output) ]] || return 0
+  is_airplay_output "$(configured_output)" || return 0
+  printf '%s\n' "$local_id" > "$fallback_file"
+  terminate_tracked_player || true
+  notify_airplay_fallback
+  play
 }
 
 airplay_targets_json() {
@@ -209,6 +292,37 @@ start_airplay_output() {
     echo 'AirPlay output could not be started' >&2
     return 1
   }
+  local local_id
+  local_id=$(local_output_id 2>/dev/null || true)
+  if [[ -n $local_id ]]; then
+    setsid "$script_self" _watch "$id" "$local_id" >/dev/null 2>&1 8>&- &
+  fi
+}
+
+# Resolve the output to actually play on. AirPlay is started synchronously here
+# so an immediate failure (unreachable host, refused port, no bridge) can fall
+# back to a local sink right away; slower handshake failures are handled by the
+# detached watcher spawned from start_airplay_output. Prints the effective sink.
+resolve_play_output() {
+  local requested=$1
+  [[ -n $requested ]] || { printf '\n'; return 0; }
+  if ! is_airplay_output "$requested"; then
+    printf '%s\n' "$requested"
+    return 0
+  fi
+  if start_airplay_output "$requested"; then
+    printf '%s\n' "$requested"
+    return 0
+  fi
+  [[ ${SOMAFM_AIRPLAY_FALLBACK:-1} == 0 ]] && return 1
+  local fallback
+  fallback=$(local_output_id 2>/dev/null || true)
+  if [[ -z $fallback ]]; then
+    return 1
+  fi
+  printf '%s\n' "$fallback" > "$fallback_file"
+  notify_airplay_fallback
+  printf '%s\n' "$fallback"
 }
 
 write_status() {
@@ -317,6 +431,9 @@ start_player() {
   # any other output uses the stored volume directly.
   local selected_output mpv_volume
   selected_output=$(resolved_configured_output)
+  if [[ -n $selected_output ]]; then
+    selected_output=$(resolve_play_output "$selected_output") || exit 4
+  fi
   mpv_volume=$(configured_volume)
   if is_airplay_output "$selected_output"; then mpv_volume=100; fi
   local -a player_arguments=(
@@ -338,9 +455,6 @@ start_player() {
     "$url"
   )
   if [[ -n $selected_output ]]; then
-    if is_airplay_output "$selected_output" && ! start_airplay_output "$selected_output"; then
-      exit 4
-    fi
     player_arguments+=(--audio-device="pipewire/$selected_output")
   fi
   rm -f "$socket"
@@ -403,6 +517,7 @@ play() {
 }
 
 stop_player() {
+  clear_override
   airplay_bridge park >/dev/null 2>&1 || true
   if [[ ! -S $socket ]]; then
     if ! terminate_tracked_player; then
@@ -505,6 +620,7 @@ list_outputs() {
 
 set_output() {
   local requested=${1-}
+  clear_override
   if [[ -n $requested ]]; then
     [[ $requested =~ ^[A-Za-z0-9._:+-]{1,160}$ ]] || {
       echo 'Unknown audio output' >&2
@@ -519,10 +635,11 @@ set_output() {
     }
   fi
 
-  local previous_airplay
+  local previous_airplay effective
   previous_airplay=$(airplay_running_id)
+  effective=$requested
   if [[ -n $requested ]] && is_airplay_output "$requested" && [[ -S $socket ]]; then
-    if ! start_airplay_output "$requested" >/dev/null 2>&1; then
+    if ! effective=$(resolve_play_output "$requested"); then
       echo 'AirPlay output could not be started' >&2
       status >/dev/null
       exit 4
@@ -541,7 +658,7 @@ set_output() {
   if [[ -S $socket ]]; then
     local device command
     device=auto
-    [[ -z $requested ]] || device="pipewire/$requested"
+    [[ -z $effective ]] || device="pipewire/$effective"
     command=$(jq -cn --arg device "$device" '{command:["set_property","audio-device",$device]}')
     if ! send_command "$command"; then
       status >/dev/null
@@ -554,7 +671,7 @@ set_output() {
     # receiver volume is the control), the stored volume everywhere else.
     local synced_volume target_volume
     target_volume=$(configured_volume)
-    is_airplay_output "$requested" && target_volume=100
+    is_airplay_output "$effective" && target_volume=100
     synced_volume=$(jq -cn --argjson volume "$target_volume" '{command:["set_property","volume",$volume]}')
     send_command "$synced_volume" >/dev/null 2>&1 || true
   fi
@@ -573,7 +690,7 @@ set_output() {
 }
 
 action=${1:-status}
-[[ $action == play || $action == outputs || $action == fun ]] || flock -x 8
+[[ $action == play || $action == outputs || $action == fun || $action == _watch || $action == _fallback ]] || flock -x 8
 
 
 
@@ -732,6 +849,12 @@ case "$action" in
   fun)
     [[ -x $fun_bridge_script ]] || { echo 'Fun engine is unavailable' >&2; exit 4; }
     exec "$fun_bridge_script" "${@:2}"
+    ;;
+  _watch)
+    airplay_watch "${2-}" "${3-}"
+    ;;
+  _fallback)
+    airplay_fallback "${2-}"
     ;;
   *)
     echo "Unknown action: $action" >&2

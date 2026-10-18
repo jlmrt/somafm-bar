@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.ltillegal.somafm-bar",
   "name": "SomaFM Bar",
-  "version": "1.9.4",
+  "version": "1.10.0",
   "author": "ltillegal",
   "description": "SomaFM radio in the Omarchy bar: play, pause and set volume from a popup card, and copy the current track title",
   "license": "MIT",

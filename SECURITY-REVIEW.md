@@ -35,6 +35,9 @@ tracked process start time before stopping it.
   failed downloads can still use an acceptable stale cache.
 - Added the `--` argument separator to wl-copy so a track title beginning with
   a dash is treated as text.
+- Fixed an upstream first-run error: `station_url` read an uninitialized local
+  variable under `set -u` before any station override existed. A regression
+  test reproduces the original failure and verifies the default HTTPS URL.
 - Corrected the README's privacy claim: the catalog, selected stream/playlist,
   and configured AirPlay receivers can use different hosts.
 

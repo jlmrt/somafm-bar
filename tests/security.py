@@ -87,6 +87,14 @@ sys.stdout.write(os.environ["SOMA_TEST_CATALOG"])
         self.assertFalse(self.cache.exists())
         self.assertEqual(list(self.data.glob("ch.*.json")), [])
 
+    def test_cold_start_status_has_default_https_stream(self):
+        result = subprocess.run([str(ROOT / "player"), "status"], env=self.env,
+                                capture_output=True, text=True, timeout=10, check=True)
+        self.assertEqual(result.stderr, "")
+        state = json.loads(result.stdout)
+        self.assertFalse(state["running"])
+        self.assertEqual(state["url"], "https://ice6.somafm.com/bossa-128-mp3")
+
 
 if __name__ == "__main__":
     unittest.main()

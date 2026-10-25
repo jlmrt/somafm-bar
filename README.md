@@ -8,7 +8,7 @@ Bar widget for [Omarchy](https://omarchy.org/) that plays a SomaFM station throu
 
 - A note icon in the bar that turns green while the station is playing.
 - Left-click opens the popup card under the icon — nothing starts playing until you press **Play**.
-- Popup card: current track title, Play/Pause (highlighted green while playing), Stop, a volume slider, and the list of audio outputs.
+- Popup card: current track title, Play/Pause (highlighted green while playing), Stop, a volume slider, and the list of audio outputs. Output labels put port names such as Speaker or HDMI 1 first; tooltips retain the full device description.
 - The playback state and the stream quality (for example `128 kbps MP3`, parsed from the station URL) are shown in the card and in the bar tooltip.
 - Copy button next to the title puts the current track title on the clipboard and closes the card.
 - Right-click the bar icon stops playback, middle-click toggles play/pause, scroll wheel changes volume in 5% steps.
@@ -61,8 +61,8 @@ omarchy plugin update io.github.ltillegal.somafm-bar
 ```
 
 This pulls from your fork and hot-reloads the plugin. Run
-`python3 tests/security.py` from the working repository to check the catalog
-limits and first-run status behavior.
+`python3 -m unittest discover -s tests -p '*.py'` from the working repository
+to check catalog limits, station ordering, output labels, and playback behavior.
 
 ## Uninstall
 
@@ -153,8 +153,8 @@ The bridge helper lives at `airplay-bridge` in this folder and is driven by the 
 The popup card now includes a searchable station list with favorites:
 
 - **Favorites** — scrollable list of your saved stations. Click a favorite to switch instantly. Click the star to remove it.
-- **All Stations / Search results** — scrollable list pulled live from SomaFM (cached for 1 hour). Type in "Search stations..." to filter by name/description. Click the star to add/remove from favorites.
-- Stations are switched directly from the popup (the card stays responsive while switching).
+- **Popular stations / Search results** — scrollable list pulled live from SomaFM (cached for 1 hour), ordered by listener count from highest to lowest. Type in "Search stations..." to filter by name/description. Click the star to add/remove from favorites.
+- Selecting a station or favorite immediately starts playback, including when the player is stopped or paused. The card stays responsive while switching.
 
 Manage favorites headlessly with the player script:
 

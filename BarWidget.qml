@@ -76,11 +76,6 @@ BarWidget {
     return root.singleLineText(value, 160).replace(/</g, "‹").replace(/>/g, "›")
   }
 
-  function outputLabel(value) {
-    var label = root.singleLineText(value, 80)
-    return label.length > 30 ? label.slice(0, 29) + "…" : label
-  }
-
   function applyPlayerState(raw, withVolume) {
     try {
       if (typeof raw !== "string" || raw.length > 65536) return
@@ -104,7 +99,7 @@ BarWidget {
       if (nextUrl !== "") root.streamUrl = nextUrl
       root.audioOutput = root.singleLineText(state.output, 160)
       var station = root.singleLineText(state.station && state.station.name, 80)
-      if (station !== "") root.stationName = station
+      if (withVolume !== false && station !== "") root.stationName = station
     } catch (error) {
       return
     }
@@ -424,7 +419,8 @@ BarWidget {
             if (!item || typeof item.id !== "string" || item.id === "") continue
             list.push({
               id: item.id,
-              label: root.singleLineText(item.label || item.id, 80)
+              label: root.singleLineText(item.label || item.id, 160),
+              description: root.singleLineText(item.description || item.label || item.id, 160)
             })
           }
         }
@@ -908,12 +904,11 @@ BarWidget {
 
           Repeater {
             model: root.audioOutputs
-            delegate: Button {
+            delegate: LabelButton {
               width: outputColumn.width
-              text: root.outputLabel(modelData.label)
-              leftAlign: true
+              label: modelData.label
               selected: modelData.id === root.audioOutput
-              tooltipText: root.safeTooltipText(modelData.label)
+              tooltipText: root.safeTooltipText(modelData.description)
               onClicked: root.selectOutput(modelData.id)
             }
           }
@@ -924,17 +919,6 @@ BarWidget {
           width: popupColumn.width
           spacing: Style.spacing.controlGap
           visible: root.stationsLoaded
-
-          Text {
-            width: stationsColumn.width
-            text: "Stations"
-            textFormat: Text.PlainText
-            color: Color.foreground
-            opacity: 0.65
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            elide: Text.ElideRight
-          }
 
           TextField {
             width: stationsColumn.width
@@ -959,37 +943,43 @@ BarWidget {
               elide: Text.ElideRight
             }
 
-            ScrollView {
+            Flickable {
               width: stationsColumn.width
-              implicitHeight: Math.min(root.favStations.length * 40, 200)
+              implicitHeight: Math.min(favCol.implicitHeight, Style.space(200))
+              contentWidth: width
+              contentHeight: favCol.implicitHeight
+              boundsBehavior: Flickable.StopAtBounds
+              flickableDirection: Flickable.VerticalFlick
               clip: true
-              Flickable {
-                anchors.fill: parent
-                contentWidth: width
-                contentHeight: favCol.height
-                interactive: true
-                flickableDirection: Flickable.VerticalFlick
-                Column {
-                  id: favCol
-                  width: parent.width
-                  spacing: Style.spacing.controlGap
-                  Repeater {
-                    model: root.favStations
-                    delegate: Row {
-                      width: parent.width
-                      spacing: Style.spacing.controlGap
-                      Button {
-                        width: parent.width - favBtn.width - parent.spacing
-                        text: root.singleLineText(modelData.name, 60)
-                        leftAlign: true
-                        onClicked: root.switchStation(modelData)
-                      }
-                      PanelActionButton {
-                        id: favBtn
-                        iconText: "\uf005"
-                        tooltipText: "Remove from favorites"
-                        onClicked: root.toggleFavorite(modelData)
-                      }
+              ScrollBar.vertical: ScrollBar {
+                id: favoritesScrollBar
+                policy: ScrollBar.AsNeeded
+              }
+              Column {
+                id: favCol
+                width: Math.max(0, parent.width - favoritesScrollBar.width - Style.spacing.controlGap)
+                spacing: Style.spacing.controlGap
+                Repeater {
+                  model: root.favStations
+                  delegate: Row {
+                    width: parent.width
+                    spacing: Style.spacing.controlGap
+                    LabelButton {
+                      width: parent.width - favBtn.width - parent.spacing
+                      label: root.singleLineText(modelData.name, 120)
+                      tooltipText: root.safeTooltipText(modelData.name)
+                      anchors.verticalCenter: parent.verticalCenter
+                      onClicked: root.switchStation(modelData)
+                    }
+                    PanelActionButton {
+                      id: favBtn
+                      anchors.verticalCenter: parent.verticalCenter
+                      focusable: true
+                      Accessible.role: Accessible.Button
+                      Accessible.name: "Remove " + modelData.name + " from favorites"
+                      iconText: "\uf005"
+                      tooltipText: "Remove from favorites"
+                      onClicked: root.toggleFavorite(modelData)
                     }
                   }
                 }
@@ -1004,7 +994,7 @@ BarWidget {
 
             Text {
               width: parent.width
-              text: root.searchText === "" ? "All stations" : "Search results"
+              text: root.searchText === "" ? "Popular stations" : "Search results"
               textFormat: Text.PlainText
               color: Color.foreground
               opacity: 0.5
@@ -1013,38 +1003,44 @@ BarWidget {
               elide: Text.ElideRight
             }
 
-            ScrollView {
+            Flickable {
               width: stationsColumn.width
-              implicitHeight: Math.min(root.filteredStations().length * 40, 240)
+              implicitHeight: Math.min(allCol.implicitHeight, Style.space(240))
+              contentWidth: width
+              contentHeight: allCol.implicitHeight
+              boundsBehavior: Flickable.StopAtBounds
+              flickableDirection: Flickable.VerticalFlick
               clip: true
-              Flickable {
-                anchors.fill: parent
-                contentWidth: width
-                contentHeight: allCol.height
-                interactive: true
-                flickableDirection: Flickable.VerticalFlick
-                Column {
-                  id: allCol
-                  width: parent.width
-                  spacing: Style.spacing.controlGap
-                  Repeater {
-                    model: root.filteredStations()
-                    delegate: Row {
-                      width: parent.width
-                      spacing: Style.spacing.controlGap
-                      Button {
-                        width: parent.width - favBtn2.width - parent.spacing
-                        text: root.singleLineText(modelData.name, 60)
-                        leftAlign: true
-                        tooltipText: root.safeTooltipText(modelData.description)
-                        onClicked: root.switchStation(modelData)
-                      }
-                      PanelActionButton {
-                        id: favBtn2
-                        iconText: root.isFavorite(modelData.url) ? "\uf005" : "\uf006"
-                        tooltipText: root.isFavorite(modelData.url) ? "Remove from favorites" : "Add to favorites"
-                        onClicked: root.toggleFavorite(modelData)
-                      }
+              ScrollBar.vertical: ScrollBar {
+                id: stationsScrollBar
+                policy: ScrollBar.AsNeeded
+              }
+              Column {
+                id: allCol
+                width: Math.max(0, parent.width - stationsScrollBar.width - Style.spacing.controlGap)
+                spacing: Style.spacing.controlGap
+                Repeater {
+                  model: root.filteredStations()
+                  delegate: Row {
+                    width: parent.width
+                    spacing: Style.spacing.controlGap
+                    LabelButton {
+                      width: parent.width - favBtn2.width - parent.spacing
+                      label: root.singleLineText(modelData.name, 120)
+                      anchors.verticalCenter: parent.verticalCenter
+                      tooltipText: root.safeTooltipText(modelData.description)
+                      onClicked: root.switchStation(modelData)
+                    }
+                    PanelActionButton {
+                      id: favBtn2
+                      anchors.verticalCenter: parent.verticalCenter
+                      focusable: true
+                      Accessible.role: Accessible.Button
+                      Accessible.name: (root.isFavorite(modelData.url) ? "Remove " : "Add ")
+                        + modelData.name + (root.isFavorite(modelData.url) ? " from favorites" : " to favorites")
+                      iconText: root.isFavorite(modelData.url) ? "\uf005" : "\uf006"
+                      tooltipText: root.isFavorite(modelData.url) ? "Remove from favorites" : "Add to favorites"
+                      onClicked: root.toggleFavorite(modelData)
                     }
                   }
                 }

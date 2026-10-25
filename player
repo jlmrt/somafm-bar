@@ -613,7 +613,11 @@ list_outputs() {
         | .name as $id
         | select($id | test("^([A-Za-z0-9._:+-]{1,160})$"))
         | select(($airplay_ids | index($id)) | not)
-        | {id: $id, label: ((.description // $id) | tostring | gsub("[\\r\\n\\t]"; " ") | .[:160])}
+        | {id: $id,
+           label: ([.properties["node.nick"], .properties["device.profile.description"], .description, $id]
+             | map(select(type == "string" and length > 0))[0]
+             | gsub("[\\r\\n\\t]"; " ") | .[:160]),
+           description: ((.description // $id) | tostring | gsub("[\\r\\n\\t]"; " ") | .[:160])}
       ] + $airplay
     | {outputs: .}'
 }
@@ -734,8 +738,7 @@ station_cache_within_limit() {
 normalize_stations() {
   fetch_stations_json | jq -c '
     [.channels[] | select(type=="object") | .id as $id | .title as $title | .description as $desc |
-      (try (.playlists[] | select(.format|tostring|contains("mp3"))) catch null) as $p |
-      ($p // {}) as $pl |
+      ([ (.playlists // [])[] | select(.format|tostring|contains("mp3")) ][0] // {}) as $pl |
       ($id|tostring|gsub("[[:space:]]+";"")) as $sid |
       (if ($pl.url|type=="string") then $pl.url else ("https://ice2.somafm.com/"+$sid+"-128-mp3") end) as $url |
       select($url|test("^https?://")) |
@@ -744,9 +747,10 @@ normalize_stations() {
         name: ($title|tostring|gsub("[\\r\\n\\t]";" ")|.[0:120]),
         title: ($title|tostring|gsub("[\\r\\n\\t]";" ")|.[0:120]),
         description: ($desc|tostring|gsub("[\\r\\n\\t]";" ")|.[0:400]),
-        url: $url
+        url: $url,
+        listeners: ((.listeners | tonumber? // 0) | if . < 0 then 0 else floor end)
       }
-    ] | unique_by(.url) | sort_by(.name)'
+    ] | unique_by(.url) | sort_by(-.listeners, (.name | ascii_downcase))'
 }
 
 stations_cmd() {
@@ -794,12 +798,13 @@ switch_station() {
   jq -n --arg n "$name" --arg u "$url" '{name:$n,url:$u}' > "$tmp"
   mv "$tmp" "$override_file"
   if [[ -S $socket ]]; then
-    reload_if_idle || send_command "$(jq -cn --arg url "$url" '{command:["loadfile",$url,"replace"]}')" >/dev/null 2>&1 || true
-    send_command '{"command":["set_property","pause",false]}' >/dev/null 2>&1 || true
-  else
-    player_alive || true
+    if ! send_command "$(jq -cn --arg url "$url" '{command:["loadfile",$url,"replace"]}')"; then
+      echo 'Station could not be loaded' >&2
+      return 4
+    fi
+    send_command "$(jq -cn --arg name "$name" '{command:["script-message","somafm-station",$name]}')" || true
   fi
-  SOMA_STATION="$(station_name)" status >/dev/null 2>&1 || status
+  play
 }
 
 case "$action" in

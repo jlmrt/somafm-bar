@@ -100,24 +100,26 @@ Playback volume and audio output live outside the repository and are stored per 
 
 ### Recording songs
 
-While a station is playing, open the popup and press **Record**. Songs are saved
+Open the popup and press **Record** to record the selected station, including
+when playback is stopped or paused. Songs are saved
 to the Music library returned by `xdg-user-dir MUSIC` (normally `~/Music`), under
 `SomaFM/<station>/`. Filenames include the recording time and the streamed track
 title; artist, title, and station tags are embedded in each file. Existing files
 are never overwritten.
 
 Only complete songs are kept. Recording waits for the next song after you enable
-it, resume playback, reconnect, or change stations. A file is published when the
-following song's metadata arrives. Pausing/stopping playback or pressing **Stop
-recording** discards the unfinished song. A quota or low-space stop also discards
-it, keeping completed songs. Temporary files are hidden while a song is being
-recorded.
+it, reconnect, or change stations. A file is published when the following song's
+metadata arrives. Pressing **Stop recording**, reaching a quota or disk reserve,
+or changing stations discards the unfinished song, keeping completed songs.
+Temporary files are hidden while a song is being recorded.
 
-Recording stays enabled through playback pauses, stops, and station changes, and
-resumes automatically when a stream plays again. It ends when you press **Stop
-recording**, a storage limit is reached, or the desktop session ends. A lost
-network connection is retried, skipping the interrupted song. The popup reports
-waiting, paused, and error states.
+Playback and recording work independently. You can press **Stop playback** or
+pause listening while recording continues uninterrupted, and start listening
+again whenever you want. Volume, mute, and output changes affect listening only.
+Recording follows station selections and ends when you press **Stop recording**,
+a storage limit is reached, or the desktop session ends. A lost network
+connection is retried, skipping the interrupted song. The popup reports waiting,
+connecting, and error states.
 
 The recorder reads ICY metadata and MP3/AAC audio through its own connection to
 the selected stream, preserving the original audio without re-encoding. It
@@ -127,7 +129,7 @@ change. Streams without ICY song metadata or with unsupported audio formats
 report an error.
 
 ```bash
-./player record start   # requires a playing stream
+./player record start   # records the selected station, with or without playback
 ./player record stop    # keeps complete songs; discards the current song
 ./player record status  # JSON status, saved-song count, and destination
 ```

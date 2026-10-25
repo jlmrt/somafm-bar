@@ -10,7 +10,6 @@ from pathlib import Path
 import re
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
@@ -80,68 +79,6 @@ def read_json(path):
     except (OSError, ValueError):
         pass
     return {}
-
-
-class Mpv:
-    def __init__(self, path):
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.socket.settimeout(2)
-        try:
-            self.socket.connect(str(path))
-        except OSError:
-            self.socket.close()
-            raise RuntimeError("Play a stream before recording.") from None
-        self.reader = self.socket.makefile("rb")
-        self.sequence = 0
-
-    def close(self):
-        self.socket.close()
-        self.reader.close()
-
-    def send(self, command):
-        self.sequence += 1
-        self.socket.sendall((json.dumps({"command": command, "request_id": self.sequence}) + "\n").encode())
-        return self.sequence
-
-    def receive(self):
-        line = self.reader.readline(65537)
-        if not line or len(line) > 65536:
-            raise RuntimeError("Playback ended.")
-        return json.loads(line)
-
-    def get(self, name):
-        request = self.send(["get_property", name])
-        while True:
-            response = self.receive()
-            if response.get("request_id") == request:
-                return response.get("data") if response.get("error") == "success" else None
-
-    def playing_path(self):
-        if self.get("idle-active") is not False or self.get("pause") is not False:
-            raise RuntimeError("Play a stream before recording.")
-        path = self.get("path")
-        if not isinstance(path, str) or urlsplit(path).scheme not in ("http", "https"):
-            raise RuntimeError("Recording requires an HTTP or HTTPS radio stream.")
-        return path
-
-    def watch(self, expected, stopped):
-        try:
-            for index, name in enumerate(("pause", "idle-active", "path")):
-                self.send(["observe_property", index, name])
-            # A blocking read is intentional: playback events wake this daemon thread.
-            self.socket.settimeout(None)
-            while not stopped.is_set():
-                event = self.receive()
-                name, value = event.get("name"), event.get("data")
-                if (event.get("event") in ("shutdown", "end-file")
-                        or (event.get("event") == "property-change" and (
-                            (name in ("pause", "idle-active") and value is not False)
-                            or (name == "path" and value != expected)))):
-                    break
-        except (OSError, ValueError, RuntimeError):
-            pass
-        if not stopped.is_set():
-            os.kill(os.getpid(), signal.SIGUSR1)
 
 
 class WebRedirect(HTTPRedirectHandler):
@@ -334,7 +271,7 @@ class Songs:
         self.file_bytes = 0
 
 
-class PlaybackChanged(BaseException):
+class StationChanged(BaseException):
     pass
 
 
@@ -408,11 +345,11 @@ class Recorder:
                         error="Recording was interrupted. The unfinished song was discarded.")
         return {"active": False, "starting": False, "error": "", **self.state}
 
-    def start(self, station):
+    def start(self, url, station):
         if self.tracked_pid():
             return self.status()
-        with contextlib.closing(Mpv(self.runtime / "mpvd.sock")) as mpv:
-            mpv.playing_path()
+        if urlsplit(url).scheme not in ("http", "https"):
+            raise RuntimeError("Recording requires an HTTP or HTTPS radio stream.")
         music = ""
         if shutil.which("xdg-user-dir"):
             result = subprocess.run(["xdg-user-dir", "MUSIC"], capture_output=True, text=True, timeout=3)
@@ -423,9 +360,9 @@ class Recorder:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         Budget(directory, read_json(Path(__file__).with_name("config.json"))).check(TAG_SIZE)
         self.state = {"active": True, "starting": True, "directory": str(directory), "file": "",
-                      "title": "", "saved": 0, "waiting": True, "paused": False, "error": ""}
+                      "title": "", "saved": 0, "waiting": True, "url": url, "station": station, "error": ""}
         # The worker takes recorder.lock before writing; publish its PID and initial state first.
-        child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_run", station,
+        child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_run", url, station,
                                   str(directory)], stdin=subprocess.DEVNULL,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                  start_new_session=True, close_fds=True)
@@ -449,7 +386,23 @@ class Recorder:
                 raise RuntimeError("Recording is still finishing. Try Stop recording again.")
         return self.status()
 
-    def run(self, station, directory):
+    def source(self, fallback_url, fallback_station):
+        config = read_json(Path(__file__).with_name("config.json"))
+        data_root = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+        override = read_json(data_root / "somafm-bar/override.json")
+        url = override.get("url") or config.get("url") or fallback_url
+        name = override.get("name") or config.get("station") or fallback_station
+        if not isinstance(url, str) or urlsplit(url).scheme not in ("http", "https"):
+            url = fallback_url
+        return url, clean_text(name)
+
+    def watch_station(self, expected, fallback_url, fallback_station, stopped):
+        while not stopped.wait(0.25):
+            if self.source(fallback_url, fallback_station) != expected:
+                os.kill(os.getpid(), signal.SIGUSR1)
+                return
+
+    def run(self, url, station, directory):
         config = read_json(Path(__file__).with_name("config.json"))
         budget = Budget(Path(directory), config)
         songs = None
@@ -458,8 +411,8 @@ class Recorder:
         def stop(_signal, _frame):
             raise RecordingStopped()
 
-        def playback_changed(_signal, _frame):
-            raise PlaybackChanged()
+        def station_changed(_signal, _frame):
+            raise StationChanged()
 
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
@@ -469,28 +422,18 @@ class Recorder:
                 self.state = read_json(self.state_path)
             while True:
                 budget.check(TAG_SIZE)
-                mpv = None
-                try:
-                    mpv = Mpv(self.runtime / "mpvd.sock")
-                    expected = mpv.playing_path()
-                except (OSError, RuntimeError):
-                    if mpv:
-                        mpv.close()
-                    self.report(starting=False, paused=True, waiting=True, title="", file="")
-                    time.sleep(0.5)
-                    continue
-                data_root = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-                override = read_json(data_root / "somafm-bar/override.json")
-                name = clean_text(override.get("name") or config.get("station") or station)
+                selected_url, name = self.source(url, station)
                 destination = Path(directory) / filename(name, 100)
                 destination.mkdir(mode=0o700, exist_ok=True)
-                self.report(directory=str(destination), paused=False, starting=True, waiting=True, title="", error="")
+                self.report(directory=str(destination), starting=True, waiting=True, title="", error="",
+                            url=selected_url, station=name)
                 response, songs = None, None
                 stopped = threading.Event()
-                signal.signal(signal.SIGUSR1, playback_changed)
+                signal.signal(signal.SIGUSR1, station_changed)
                 try:
-                    threading.Thread(target=mpv.watch, args=(expected, stopped), daemon=True).start()
-                    response, interval, codec = open_stream(expected)
+                    threading.Thread(target=self.watch_station, args=((selected_url, name), url, station, stopped),
+                                     daemon=True).start()
+                    response, interval, codec = open_stream(selected_url)
                     # Count retained files, with the current song included until discarded.
                     def report(**changes):
                         if "saved" in changes:
@@ -518,22 +461,18 @@ class Recorder:
                                 raise OSError("The stream disconnected. Waiting to reconnect.")
                             metadata += part
                         songs.metadata(stream_title(metadata.rstrip(b"\0")))
-                except PlaybackChanged:
+                except StationChanged:
                     pass
                 except OSError as failure:
-                    self.report(error=clean_text(failure), paused=True, starting=False)
-                    time.sleep(2)
+                    self.report(error=clean_text(failure), starting=True)
                 finally:
                     signal.signal(signal.SIGUSR1, signal.SIG_IGN)
                     stopped.set()
                     if response:
                         response.close()
-                    with contextlib.suppress(OSError):
-                        mpv.socket.shutdown(socket.SHUT_RDWR)
-                    mpv.close()
                     if songs:
                         songs.discard()
-                time.sleep(0.1)
+                time.sleep(2 if self.state.get("error") else 0.1)
         except RecordingStopped:
             pass
         except (OSError, ValueError, RuntimeError) as failure:
@@ -542,20 +481,20 @@ class Recorder:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             signal.signal(signal.SIGUSR1, signal.SIG_IGN)
-            self.report(active=False, starting=False, paused=False, waiting=False, file="", error=error, bytes=budget.used)
+            self.report(active=False, starting=False, waiting=False, file="", error=error, bytes=budget.used)
 
 
 def main():
     os.umask(0o077)
     recorder = Recorder()
     action = sys.argv[1] if len(sys.argv) > 1 else "status"
-    if action == "_run" and len(sys.argv) == 4:
+    if action == "_run" and len(sys.argv) == 5:
         recorder.run(*sys.argv[2:])
         return 0
     with recorder.lock():
         try:
-            if action == "start" and len(sys.argv) == 3:
-                state = recorder.start(clean_text(sys.argv[2]))
+            if action == "start" and len(sys.argv) == 4:
+                state = recorder.start(sys.argv[2], clean_text(sys.argv[3]))
             elif action == "stop":
                 state = recorder.stop()
             elif action == "status":

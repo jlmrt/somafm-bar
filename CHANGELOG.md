@@ -4,6 +4,16 @@ All notable changes to SomaFM Bar. The format is loosely based on
 [Keep a Changelog](https://keepachangelog.com/), and versions follow the plugin
 manifest's `version` field.
 
+## [1.11.1]
+
+### Fixed
+
+- Recording can start while playback is stopped or paused. Pausing, resuming,
+  or stopping playback leaves recording uninterrupted, including the current
+  song. Recording uses the selected station directly and follows station changes.
+- Renamed the playback Stop button to **Stop playback** to distinguish it from
+  **Stop recording**. The Record button is available without starting playback.
+
 ## [1.11.0]
 
 ### Added

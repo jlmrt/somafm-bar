@@ -36,7 +36,6 @@ BarWidget {
   property string pendingOutput: ""
   property bool recording: false
   property bool recordingStarting: false
-  property bool recordingPaused: false
   property bool recordingWaiting: false
   property string recordingDirectory: ""
   property string recordingTitle: ""
@@ -131,7 +130,6 @@ BarWidget {
       var state = JSON.parse(raw || "{}")
       root.recording = state.active === true
       root.recordingStarting = state.starting === true
-      root.recordingPaused = state.paused === true
       root.recordingWaiting = state.waiting === true
       root.recordingDirectory = root.singleLineText(state.directory || "", 1024)
       root.recordingTitle = root.singleLineText(state.title || "", 512)
@@ -612,7 +610,7 @@ BarWidget {
         + (root.qualityText !== "" ? "  ·  " + root.qualityText : "")
         + "  ·  " + root.playerVolume + "%"
         + (root.recording ? "  ·  Recording" : "")
-      : root.stationName
+      : root.stationName + (root.recording ? "  ·  Recording" : "")
 
     onPressed: function(mouseButton) {
       if (!root.bar) return
@@ -696,7 +694,7 @@ BarWidget {
             ? (root.playerPaused ? "Paused" : "Playing")
               + (root.qualityText !== "" ? "  ·  " + root.qualityText : "")
               + (root.playerMuted ? "  ·  muted" : "  ·  " + root.playerVolume + "%")
-            : "Stopped"
+            : "Playback stopped"
           textFormat: Text.PlainText
           color: root.playing ? root.playingColor : Color.foreground
           opacity: 0.65
@@ -718,7 +716,7 @@ BarWidget {
 
           Button {
             iconText: "\uf04d"
-            text: "Stop"
+            text: "Stop playback"
             onClicked: root.runPlayerAction("stop")
           }
         }
@@ -727,7 +725,7 @@ BarWidget {
           width: popupColumn.width
           iconText: root.recording ? "\uf04d" : "\uf111"
           text: root.recording ? "Stop recording" : "Record"
-          enabled: !recordingProcess.running && (root.recording || root.playing)
+          enabled: !recordingProcess.running
           focusable: true
           Accessible.role: Accessible.Button
           Accessible.name: text
@@ -742,7 +740,6 @@ BarWidget {
           width: popupColumn.width
           visible: root.recording || root.recordingError !== ""
           text: root.recordingError !== "" ? root.recordingError
-            : root.recordingPaused ? "Recording paused until playback resumes"
             : root.recordingStarting ? "Connecting to record…"
             : root.recordingWaiting ? "Waiting for the next song"
             : "Recording: " + (root.recordingTitle || root.stationName)

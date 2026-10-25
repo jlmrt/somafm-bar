@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Recording boundaries, storage limits, and an isolated ICY/IPC integration test."""
+"""Recording boundaries, storage limits, and playback-independent ICY recording."""
 
-import contextlib
 import http.server
 import importlib.util
 import json
@@ -9,7 +8,6 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import socketserver
 import subprocess
 import sys
 import tempfile
@@ -156,43 +154,6 @@ class SongTests(unittest.TestCase):
         self.assertIn("Complete", files[0].name)
 
 
-class IPCHandler(socketserver.StreamRequestHandler):
-    def handle(self):
-        observed = {}
-        self.server.clients.append((self, observed))
-        try:
-            for line in self.rfile:
-                request = json.loads(line)
-                command = request["command"]
-                response = {"request_id": request["request_id"], "error": "success"}
-                if command[0] == "get_property":
-                    response["data"] = self.server.properties.get(command[1])
-                self.send(response)
-                if command[0] == "observe_property":
-                    observed[command[2]] = command[1]
-                    self.send({"event": "property-change", "name": command[2], "data": self.server.properties.get(command[2])})
-        except (OSError, ValueError):
-            pass
-        finally:
-            self.server.clients.remove((self, observed))
-
-    def send(self, data):
-        self.wfile.write((json.dumps(data) + "\n").encode())
-        self.wfile.flush()
-
-
-class IPCServer(socketserver.ThreadingUnixStreamServer):
-    daemon_threads = True
-
-    def change(self, **properties):
-        self.properties.update(properties)
-        for client, observed in list(self.clients):
-            for name, value in properties.items():
-                if name in observed:
-                    with contextlib.suppress(OSError):
-                        client.send({"event": "property-change", "name": name, "data": value})
-
-
 class StreamHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
@@ -252,21 +213,20 @@ class RecordingIntegrationTests(unittest.TestCase):
                     "PATH": str(self.bin) + os.pathsep + os.environ["PATH"]}
         self.script = self.base / "recorder.py"
         shutil.copy2(ROOT / "recorder.py", self.script)
+        for name in ("player", "player-status.lua"):
+            shutil.copy2(ROOT / name, self.base / name)
         self.config = {"station": "Test station", "recordingQuotaMiB": 20,
                        "recordingReserveMiB": 16, "recordingReservePercent": 1}
-        self.save_config()
         self.stream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), StreamHandler)
         self.stream.audio, self.stream.codec = self.audio["mp3"], "mp3"
         self.stream.title = "Artist - Initial"
         self.stream.stopped = threading.Event()
         self.url = f"http://127.0.0.1:{self.stream.server_port}/stream"
-        self.ipc = IPCServer(str(self.runtime / "mpvd.sock"), IPCHandler)
-        self.ipc.clients = []
-        self.ipc.properties = {"pause": False, "idle-active": False, "path": self.url}
-        for server in (self.stream, self.ipc):
-            threading.Thread(target=server.serve_forever, daemon=True).start()
-            self.addCleanup(server.server_close)
-            self.addCleanup(server.shutdown)
+        self.config["url"] = self.url
+        self.save_config()
+        threading.Thread(target=self.stream.serve_forever, daemon=True).start()
+        self.addCleanup(self.stream.server_close)
+        self.addCleanup(self.stream.shutdown)
         self.addCleanup(self.stream.stopped.set)
         self.addCleanup(lambda: self.command("stop"))
 
@@ -277,6 +237,13 @@ class RecordingIntegrationTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(self.script), *arguments], env=self.env,
                                 capture_output=True, text=True, timeout=12)
         self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
+        self.assertEqual(result.stderr, "")
+        return json.loads(result.stdout)
+
+    def player_action(self, *arguments):
+        result = subprocess.run([str(self.base / "player"), *arguments], env=self.env,
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertEqual(result.stderr, "")
         return json.loads(result.stdout)
 
@@ -292,7 +259,7 @@ class RecordingIntegrationTests(unittest.TestCase):
         self.fail("Timed out; recorder state: " + repr(self.state()))
 
     def start(self):
-        self.assertTrue(self.command("start", "Test station")["active"])
+        self.assertTrue(self.player_action("record", "start")["active"])
         self.wait_for(lambda: self.state().get("waiting") and not self.state().get("starting"))
 
     def next_song(self, title):
@@ -320,28 +287,27 @@ class RecordingIntegrationTests(unittest.TestCase):
         self.assertEqual(self.state()["saved"], 1)
         subprocess.run(["ffmpeg", "-v", "error", "-i", str(song), "-f", "null", "-"], capture_output=True, check=True)
 
-    def test_pause_resume_and_station_change_keep_recording_enabled(self):
+    def test_record_without_player_and_follow_station_changes(self):
+        self.assertFalse((self.runtime / "mpvd.sock").exists())
         self.start()
-        self.next_song("Artist - Interrupted")
-        self.ipc.change(pause=True)
-        self.wait_for(lambda: self.state().get("paused"))
-        self.assertTrue(self.state()["active"])
-        self.assertEqual(list(self.music.rglob(".recording-*")), [])
-        self.ipc.change(pause=False)
-        self.wait_for(lambda: not self.state().get("paused") and not self.state().get("starting"))
+        self.assertFalse(self.player_action("status")["running"])
+        self.assertFalse((self.runtime / "mpvd.sock").exists())
         self.next_song("Artist - Whole")
         self.next_song("Artist - Next")
         self.wait_for(lambda: len(self.completed()) == 1)
         override = self.base / "data/somafm-bar/override.json"
-        override.parent.mkdir(parents=True)
-        override.write_text(json.dumps({"name": "Other station"}))
-        self.ipc.change(path=self.url + "?other")
+        override.parent.mkdir(parents=True, exist_ok=True)
+        old_partial = Path(self.state()["file"])
+        override.write_text(json.dumps({"name": "Other station", "url": self.url + "?other"}))
         self.wait_for(lambda: self.state().get("directory", "").endswith("Other station") and not self.state().get("starting"))
         self.assertTrue(self.state()["active"])
+        self.assertFalse(old_partial.exists())
         self.assertEqual(list(self.music.rglob(".recording-*")), [])
-        self.ipc.change(**{"idle-active": True})
-        self.wait_for(lambda: self.state().get("paused"))
-        self.assertTrue(self.state()["active"])
+        self.assertFalse((self.runtime / "mpvd.sock").exists())
+        self.next_song("Artist - Other station song")
+        self.next_song("Artist - Following")
+        self.wait_for(lambda: len(self.completed()) == 2)
+        self.assertEqual(self.state()["saved"], 2)
 
     def test_quota_stops_automatically_and_discards_incomplete_song(self):
         self.config["recordingQuotaMiB"] = 0.03
@@ -353,18 +319,16 @@ class RecordingIntegrationTests(unittest.TestCase):
         self.assertEqual(list(self.music.rglob(".recording-*")), [])
         self.assertEqual(self.completed(), [])
 
-    def test_low_disk_space_and_paused_playback_reject_start(self):
-        self.ipc.change(pause=True)
-        self.assertIn("Play a stream", self.command("start", "Station", expected=4)["error"])
-        self.ipc.change(pause=False)
+    def test_low_disk_space_rejects_silent_recording(self):
         self.config["recordingReserveMiB"] = 10**12
         self.save_config()
-        self.assertIn("OS", self.command("start", "Station", expected=4)["error"])
+        self.assertIn("OS", self.command("start", self.url, "Station", expected=4)["error"])
         self.assertFalse(self.state()["active"])
 
     def test_playlist_resolution_and_aac_files(self):
         self.stream.audio, self.stream.codec = self.audio["aac"], "aac"
-        self.ipc.change(path=self.url.replace("/stream", "/station.pls"))
+        self.config["url"] = self.url.replace("/stream", "/station.pls")
+        self.save_config()
         self.start()
         self.next_song("Artist - AAC")
         time.sleep(0.2)
@@ -377,8 +341,9 @@ class RecordingIntegrationTests(unittest.TestCase):
         self.assertEqual(codec, "aac")
 
     def test_no_metadata_reports_error_without_saving_audio(self):
-        self.ipc.change(path=self.url.replace("/stream", "/no-metadata"))
-        self.command("start", "Test station")
+        self.config["url"] = self.url.replace("/stream", "/no-metadata")
+        self.save_config()
+        self.player_action("record", "start")
         self.wait_for(lambda: not self.state().get("active"))
         self.assertIn("metadata", self.state()["error"])
         self.assertEqual(self.completed(), [])
@@ -386,7 +351,7 @@ class RecordingIntegrationTests(unittest.TestCase):
     def test_crash_recovery_discards_unfinished_song_and_start_is_idempotent(self):
         self.start()
         first_pid = recorder.read_json(self.runtime / "recorder.pid")["pid"]
-        self.command("start", "Test station")
+        self.player_action("record", "start")
         self.assertEqual(recorder.read_json(self.runtime / "recorder.pid")["pid"], first_pid)
         self.next_song("Artist - Interrupted")
         os.kill(first_pid, signal.SIGKILL)
@@ -397,32 +362,33 @@ class RecordingIntegrationTests(unittest.TestCase):
         self.assertEqual(self.completed(), [])
 
     @unittest.skipUnless(shutil.which("mpv"), "mpv required")
-    def test_real_mpv_metadata_and_playback_events(self):
-        self.ipc.shutdown()
-        self.ipc.server_close()
-        path = self.runtime / "mpvd.sock"
-        path.unlink()
-        player = subprocess.Popen(["mpv", "--no-config", "--load-scripts=no", "--ao=null", "--no-video",
-                                   "--idle=yes", "--cache=no", "--demuxer-readahead-secs=0",
-                                   "--input-ipc-server=" + str(path), self.url],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        def stop_player():
-            player.terminate()
-            player.wait(timeout=5)
-        self.addCleanup(stop_player)
-        self.wait_for(path.exists)
+    def test_recording_continues_through_real_playback_pause_and_stop(self):
+        real_mpv = shutil.which("mpv")
+        launcher = self.bin / "mpv"
+        launcher.write_text("#!/usr/bin/env python3\nimport os, sys\nos.execv(" + repr(real_mpv)
+                            + ", ['mpv', '--no-config', '--load-scripts=no', '--ao=null', *sys.argv[1:]])\n")
+        launcher.chmod(0o700)
+        self.addCleanup(lambda: self.player_action("stop"))
+        self.assertTrue(self.player_action("play")["running"])
         self.start()
         self.next_song("Artist - Whole")
         time.sleep(0.2)
+        partial = Path(self.state()["file"])
+        self.assertTrue(self.player_action("pause")["paused"])
+        self.assertTrue(self.state()["active"])
+        self.assertEqual(self.state()["file"], str(partial))
+        self.assertTrue(self.player_action("play")["running"])
+        self.player_action("volume", "0")
+        self.assertFalse(self.player_action("stop")["running"])
+        self.assertTrue(self.state()["active"])
+        self.assertEqual(self.state()["file"], str(partial))
+        self.assertTrue(partial.exists())
         self.next_song("Artist - Following")
         self.wait_for(lambda: len(self.completed()) == 1)
-        with contextlib.closing(recorder.Mpv(path)) as mpv:
-            mpv.send(["set_property", "pause", True])
-            mpv.receive()
-        self.wait_for(lambda: self.state().get("paused"))
-        self.assertTrue(self.state()["active"])
+        self.assertIn("Artist - Whole", self.completed()[0].name)
+        self.assertFalse((self.runtime / "mpvd.sock").exists())
+        self.assertFalse(self.player_action("record", "stop")["active"])
         self.assertEqual(list(self.music.rglob(".recording-*")), [])
-        self.command("stop")
 
 
 if __name__ == "__main__":

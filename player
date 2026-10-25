@@ -43,7 +43,7 @@ station_url() {
     url=$(jq -r '.url // ""' "$script_dir/config.json" 2>/dev/null || true)
   fi
   if [[ $url != http://* && $url != https://* ]]; then
-    url="http://ice6.somafm.com/bossa-128-mp3"
+    url="https://ice6.somafm.com/bossa-128-mp3"
   fi
   printf '%s\n' "$url"
 }
@@ -700,22 +700,35 @@ fetch_stations_json() {
   if [[ -f $channels_cache ]]; then
     local mtime
     mtime=$(stat -c %Y "$channels_cache" 2>/dev/null || echo 0)
-    if (( now - mtime < ttl )); then
+    if (( now - mtime < ttl )) && station_cache_within_limit; then
       cat "$channels_cache"
       return 0
     fi
   fi
   local tmp
   tmp=$(mktemp "$data_root/somafm-bar/ch.XXXXXX.json")
-  if curl -s --max-time 25 "https://somafm.com/channels.json" > "$tmp" 2>/dev/null; then
-    if jq -e 'has("channels") and (.channels|type=="array")' "$tmp" >/dev/null 2>&1; then
+  if curl -fsS --proto '=https' --max-time 25 --max-filesize "$max_json_bytes" \
+      "https://somafm.com/channels.json" > "$tmp" 2>/dev/null; then
+    if (( $(stat -c %s "$tmp") <= max_json_bytes )) \
+      && jq -e 'has("channels") and (.channels|type=="array")' "$tmp" >/dev/null 2>&1; then
       mv "$tmp" "$channels_cache"
       cat "$channels_cache"
       return 0
     fi
   fi
   rm -f "$tmp"
-  [[ -f $channels_cache ]] && cat "$channels_cache" || echo '{"channels":[]}'
+  if station_cache_within_limit; then
+    cat "$channels_cache"
+  else
+    echo '{"channels":[]}'
+  fi
+}
+
+station_cache_within_limit() {
+  local bytes
+  [[ -f $channels_cache ]] || return 1
+  bytes=$(stat -c %s "$channels_cache") || return 1
+  (( bytes <= max_json_bytes ))
 }
 
 normalize_stations() {

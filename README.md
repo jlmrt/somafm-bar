@@ -36,13 +36,13 @@ Omarchy itself already provides `mpv` and PipeWire on most installations. `mpv` 
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/ltillegal/somafm-bar.git --enable
+omarchy plugin add https://github.com/jlmrt/somafm-bar.git --enable
 ```
 
 Or by hand:
 
 ```bash
-git clone https://github.com/ltillegal/somafm-bar.git ~/.config/omarchy/plugins/io.github.ltillegal.somafm-bar
+git clone https://github.com/jlmrt/somafm-bar.git ~/.config/omarchy/plugins/io.github.ltillegal.somafm-bar
 omarchy-shell shell rescanPlugins
 omarchy plugin enable io.github.ltillegal.somafm-bar
 ```
@@ -64,7 +64,7 @@ Edit `config.json` in the plugin folder and then use **Stop** and **Play** (or r
 ```json
 {
   "station": "SomaFM Bossa Nova",
-  "url": "http://ice6.somafm.com/bossa-128-mp3"
+  "url": "https://ice6.somafm.com/bossa-128-mp3"
 }
 ```
 
@@ -253,7 +253,13 @@ omarchy-shell shell hide io.github.ltillegal.somafm-bar     # close
 
 ## Privacy
 
-The plugin talks to exactly one host: the stream URL from `config.json` (SomaFM). It writes no telemetry, reads no files outside the plugin folder and the two directories above, and touches the clipboard only when you click the copy button.
+The plugin fetches the station catalog from `https://somafm.com/channels.json` and connects to the selected stream or playlist URL. The default stream uses HTTPS. Custom stations and URLs returned by the catalog can use HTTP. Station-catalog downloads and cached responses are limited to 4 MiB.
+
+Optional AirPlay targets add connections to the receivers you configure. The bridge captures its dedicated playback sink's monitor, not the microphone. AirPlay support needs a separately installed sender; this plugin does not install it or grant it capabilities. AirPlay passwords, if configured, are passed to that sender as command-line arguments and can be visible to local process inspection.
+
+No telemetry or credential collection was found in the reviewed code. Playback preferences and caches live in the runtime and data directories listed above. The plugin also queries local audio outputs, its tracked player process, and screensaver events. It writes to the clipboard only when you click the copy button.
+
+Like other Omarchy plugins, it runs with your user account's permissions and is not sandboxed. See [SECURITY-REVIEW.md](SECURITY-REVIEW.md) for the scope and limits of the review of this fork.
 
 ## License
 

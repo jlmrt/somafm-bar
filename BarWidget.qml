@@ -313,7 +313,7 @@ BarWidget {
 
   function copyTitle() {
     if (root.playerTitle === "") return
-    Quickshell.execDetached(["wl-copy", root.playerTitle])
+    Quickshell.execDetached(["wl-copy", "--", root.playerTitle])
     root.copied = true
     closeTimer.restart()
   }

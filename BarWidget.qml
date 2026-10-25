@@ -34,6 +34,15 @@ BarWidget {
   property bool statusReady: false
   property string pendingAction: ""
   property string pendingOutput: ""
+  property bool recording: false
+  property bool recordingStarting: false
+  property bool recordingPaused: false
+  property bool recordingWaiting: false
+  property string recordingDirectory: ""
+  property string recordingTitle: ""
+  property string recordingError: ""
+  property string recordingBuffer: ""
+  property color recordingColor: "#e74c3c"
 
   // Fun / glitch: raise the Omarchy screensaver and glitch the audio along with it.
   // Hidden: the panel only appears when revealed by Ctrl+click on the widget.
@@ -62,6 +71,7 @@ BarWidget {
   readonly property string playerPath: Qt.resolvedUrl("player").toString().replace(/^file:\/\//, "")
   readonly property string statusPath: Quickshell.env("XDG_RUNTIME_DIR") + "/somafm-bar/status.json"
   readonly property string funStatusPath: Quickshell.env("XDG_RUNTIME_DIR") + "/somafm-bar/fun.json"
+  readonly property string recordingStatusPath: Quickshell.env("XDG_RUNTIME_DIR") + "/somafm-bar/recording.json"
   readonly property string dataHome: {
     var dir = Quickshell.env("XDG_DATA_HOME")
     return (dir && dir.length > 0) ? dir : Quickshell.env("HOME") + "/.local/share"
@@ -113,6 +123,27 @@ BarWidget {
     } catch (error) {
       return
     }
+  }
+
+  function applyRecordingState(raw) {
+    try {
+      if (typeof raw !== "string" || raw.length > 65536) return
+      var state = JSON.parse(raw || "{}")
+      root.recording = state.active === true
+      root.recordingStarting = state.starting === true
+      root.recordingPaused = state.paused === true
+      root.recordingWaiting = state.waiting === true
+      root.recordingDirectory = root.singleLineText(state.directory || "", 1024)
+      root.recordingTitle = root.singleLineText(state.title || "", 512)
+      root.recordingError = root.singleLineText(state.error || "", 512)
+    } catch (error) {}
+  }
+
+  function runRecordingAction(action) {
+    if (recordingProcess.running) return
+    root.recordingBuffer = ""
+    recordingProcess.command = [root.playerPath, "record", action]
+    recordingProcess.running = true
   }
 
   function applyFunPrefs(raw) {
@@ -255,6 +286,7 @@ BarWidget {
     root.loadOutputs()
     root.loadStations()
     root.loadFavs()
+    root.runRecordingAction("status")
     root.searchText = ""
   }
 
@@ -323,6 +355,36 @@ BarWidget {
     printErrors: false
     onLoaded: root.applyPlayerState(text(), false)
     onFileChanged: reload()
+  }
+
+  FileView {
+    path: root.recordingStatusPath
+    watchChanges: true
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.applyRecordingState(text())
+    onFileChanged: reload()
+  }
+
+  Process {
+    id: recordingProcess
+    command: []
+    stdout: SplitParser {
+      onRead: function(line) { root.recordingBuffer += line }
+    }
+    onExited: function(exitCode) {
+      var buffer = root.recordingBuffer
+      root.recordingBuffer = ""
+      if (buffer !== "") root.applyRecordingState(buffer)
+      else if (exitCode !== 0) root.recordingError = "Could not control recording. Check that python3 is installed."
+    }
+  }
+
+  Timer {
+    interval: 2000
+    running: root.recording
+    repeat: true
+    onTriggered: root.runRecordingAction("status")
   }
 
   FileView {
@@ -525,6 +587,7 @@ BarWidget {
     root.loadOutputs()
     root.loadStations()
     root.loadFavs()
+    root.runRecordingAction("status")
   }
 
   Timer {
@@ -541,13 +604,14 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: "\uf001"
-    active: root.playing
-    activeColor: root.playingColor
+    active: root.playing || root.recording
+    activeColor: root.recording ? root.recordingColor : root.playingColor
     tooltipText: root.playerRunning
       ? (root.playerPaused ? "Soma paused: " : "Soma playing: ")
         + root.safeTooltipText(root.playerTitle)
         + (root.qualityText !== "" ? "  ·  " + root.qualityText : "")
         + "  ·  " + root.playerVolume + "%"
+        + (root.recording ? "  ·  Recording" : "")
       : root.stationName
 
     onPressed: function(mouseButton) {
@@ -632,7 +696,7 @@ BarWidget {
             ? (root.playerPaused ? "Paused" : "Playing")
               + (root.qualityText !== "" ? "  ·  " + root.qualityText : "")
               + (root.playerMuted ? "  ·  muted" : "  ·  " + root.playerVolume + "%")
-            : "Stopped — press Play to start"
+            : "Stopped"
           textFormat: Text.PlainText
           color: root.playing ? root.playingColor : Color.foreground
           opacity: 0.65
@@ -657,6 +721,36 @@ BarWidget {
             text: "Stop"
             onClicked: root.runPlayerAction("stop")
           }
+        }
+
+        Button {
+          width: popupColumn.width
+          iconText: root.recording ? "\uf04d" : "\uf111"
+          text: root.recording ? "Stop recording" : "Record"
+          enabled: !recordingProcess.running && (root.recording || root.playing)
+          focusable: true
+          Accessible.role: Accessible.Button
+          Accessible.name: text
+          active: root.recording
+          foreground: root.recording ? root.recordingColor : Color.foreground
+          tooltipText: root.recordingDirectory !== ""
+            ? "Save songs to " + root.recordingDirectory : "Save songs to your Music library"
+          onClicked: root.runRecordingAction(root.recording ? "stop" : "start")
+        }
+
+        Text {
+          width: popupColumn.width
+          visible: root.recording || root.recordingError !== ""
+          text: root.recordingError !== "" ? root.recordingError
+            : root.recordingPaused ? "Recording paused until playback resumes"
+            : root.recordingStarting ? "Connecting to record…"
+            : root.recordingWaiting ? "Waiting for the next song"
+            : "Recording: " + (root.recordingTitle || root.stationName)
+          textFormat: Text.PlainText
+          color: root.recordingColor
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
         }
 
         PanelSlider {

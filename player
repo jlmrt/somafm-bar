@@ -26,6 +26,15 @@ airplay_config="$data_root/somafm-bar/airplay.json"
 airplay_state="$runtime_dir/airplay.json"
 airplay_bridge_script="$script_dir/airplay-bridge"
 fun_bridge_script="$script_dir/fun-bridge"
+recorder_script="$script_dir/recorder.py"
+
+recording_command() {
+  command -v python3 >/dev/null 2>&1 || {
+    echo 'Recording requires python3' >&2
+    return 4
+  }
+  python3 "$recorder_script" "$@"
+}
 
 load_override() {
   [[ -f $override_file ]] || return 0
@@ -855,6 +864,13 @@ case "$action" in
     ;;
   status)
     status
+    ;;
+  record)
+    case "${2:-status}" in
+      start) recording_command start "$(station_name)" ;;
+      stop|status) recording_command "${2:-status}" ;;
+      *) echo 'Use record start, stop, or status' >&2; exit 2 ;;
+    esac
     ;;
   stations)
     stations_cmd

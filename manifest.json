@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "io.github.ltillegal.somafm-bar",
   "name": "SomaFM Bar",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "author": "ltillegal",
-  "description": "SomaFM radio in the Omarchy bar: play, pause and set volume from a popup card, and copy the current track title",
+  "description": "SomaFM radio in the Omarchy bar with playback controls and song recording to your Music library",
   "license": "MIT",
   "kinds": [
     "service",
@@ -17,7 +17,7 @@
   },
   "barWidget": {
     "displayName": "SomaFM",
-    "description": "Play a SomaFM station with a popup card: play, pause, volume, copy the current track",
+    "description": "Play SomaFM, control volume, copy track titles, and record songs to your Music library",
     "category": "Media",
     "allowMultiple": false,
     "defaultSection": "left"

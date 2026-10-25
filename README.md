@@ -11,6 +11,7 @@ Bar widget for [Omarchy](https://omarchy.org/) that plays a SomaFM station throu
 - Popup card: current track title, Play/Pause (highlighted green while playing), Stop, a volume slider, and the list of audio outputs. Output labels put port names such as Speaker or HDMI 1 first; tooltips retain the full device description.
 - The playback state and the stream quality (for example `128 kbps MP3`, parsed from the station URL) are shown in the card and in the bar tooltip.
 - Copy button next to the title puts the current track title on the clipboard and closes the card.
+- **Record** saves complete songs to your Music library as separate, tagged files. The bar icon turns red while recording is enabled.
 - Right-click the bar icon stops playback, middle-click toggles play/pause, scroll wheel changes volume in 5% steps.
 - The popup closes on outside click or `Esc`.
 - Volume and audio output are remembered between sessions.
@@ -29,7 +30,8 @@ External commands used by the plugin (all in the Arch `extra`/`multilib` reposit
 | `socat` | `socat` | talking to the `mpv` IPC socket |
 | `wl-copy` | `wl-clipboard` | the copy-title button |
 | `pactl` | `pipewire-pulse` (or `pipewire-utils`) | listing audio outputs |
-| `python3` | `python` | reading AirPlay 2 receiver features (optional) |
+| `python3` | `python` | song recording and reading AirPlay 2 receiver features |
+| `xdg-user-dir` | `xdg-user-dirs` | locating the Music library (optional; falls back to `~/Music`) |
 
 Omarchy itself already provides `mpv` and PipeWire on most installations. `mpv` is started with `--audio-display=no`, so the stream never produces a video window. The AirPlay 2 output additionally needs the `cliairplay` sender (see [AirPlay 2 output](#airplay-2-output)).
 
@@ -79,17 +81,59 @@ Edit `config.json` in the plugin folder and then use **Stop** and **Play** (or r
 ```json
 {
   "station": "SomaFM Bossa Nova",
-  "url": "https://ice6.somafm.com/bossa-128-mp3"
+  "url": "https://ice6.somafm.com/bossa-128-mp3",
+  "recordingQuotaMiB": 20480,
+  "recordingReserveMiB": 5120,
+  "recordingReservePercent": 5
 }
 ```
 
 - `station` — the name shown in the widget tooltip when nothing is playing.
 - `url` — a direct SomaFM stream URL. Channel names map to `https://ice2.somafm.com/<channel>-128-mp3`, for example `groovesalad`, `dronezone`, `indiepop`, `secretagent`, `defcon`, `thetrip`, `sonicuniverse`, `u80s`, `fluid`, `beatblender`, `cliqhop`, `dubstep`, `space-station-soma`, `metal`, `covers`, `folkfwd`, `left coast 70s`, `piano bar`, `voodooclub`.
+- `recordingQuotaMiB` — maximum recording size per session, including the current song; defaults to 20480 MiB (20 GiB). Stopping and starting recording begins a new session.
+- `recordingReserveMiB` / `recordingReservePercent` — recording stops before disk free space falls below the larger of these reserves. Defaults to 5120 MiB (5 GiB) or 5% of the filesystem. Limits are checked throughout recording, including while waiting for playback. Changes apply to the next recording session.
 
 Playback volume and audio output live outside the repository and are stored per user:
 
 - `$XDG_RUNTIME_DIR/somafm-bar/` — mpv IPC socket, player pid, `status.json`, `mpv.log`
 - `$XDG_DATA_HOME/somafm-bar/state.json` — remembered volume and output
+
+### Recording songs
+
+While a station is playing, open the popup and press **Record**. Songs are saved
+to the Music library returned by `xdg-user-dir MUSIC` (normally `~/Music`), under
+`SomaFM/<station>/`. Filenames include the recording time and the streamed track
+title; artist, title, and station tags are embedded in each file. Existing files
+are never overwritten.
+
+Only complete songs are kept. Recording waits for the next song after you enable
+it, resume playback, reconnect, or change stations. A file is published when the
+following song's metadata arrives. Pausing/stopping playback or pressing **Stop
+recording** discards the unfinished song. A quota or low-space stop also discards
+it, keeping completed songs. Temporary files are hidden while a song is being
+recorded.
+
+Recording stays enabled through playback pauses, stops, and station changes, and
+resumes automatically when a stream plays again. It ends when you press **Stop
+recording**, a storage limit is reached, or the desktop session ends. A lost
+network connection is retried, skipping the interrupted song. The popup reports
+waiting, paused, and error states.
+
+The recorder reads ICY metadata and MP3/AAC audio through its own connection to
+the selected stream, preserving the original audio without re-encoding. It
+supports direct streams and PLS/M3U playlists. Song boundaries depend on the
+station's metadata timing; missing or repeated titles cannot identify a song
+change. Streams without ICY song metadata or with unsupported audio formats
+report an error.
+
+```bash
+./player record start   # requires a playing stream
+./player record stop    # keeps complete songs; discards the current song
+./player record status  # JSON status, saved-song count, and destination
+```
+
+Recorder process state and `recording.json` live in `$XDG_RUNTIME_DIR/somafm-bar/`.
+Recordings are local and remain in your Music library after removing the plugin.
 
 ### Audio output
 

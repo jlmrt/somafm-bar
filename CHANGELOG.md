@@ -4,6 +4,19 @@ All notable changes to SomaFM Bar. The format is loosely based on
 [Keep a Changelog](https://keepachangelog.com/), and versions follow the plugin
 manifest's `version` field.
 
+## [1.11.0]
+
+### Added
+
+- **Song recording.** Start recording from the popup while a stream plays.
+  Complete songs are saved as separate, tagged MP3 or AAC files in the user's
+  Music library under `SomaFM/<station>/`, using the stream's ICY metadata.
+  Recording stays enabled through playback pauses, stops, and station changes.
+  It skips songs already in progress and discards interrupted or unfinished songs.
+- A configurable **20 GiB per-session quota** and disk reserve: recording stops
+  before free space falls below 5 GiB or 5% of the filesystem, whichever is larger.
+- A red bar indicator, recording status, and `./player record start|stop|status`.
+
 ## [1.10.0]
 
 ### Added

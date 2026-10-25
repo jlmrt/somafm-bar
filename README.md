@@ -16,7 +16,7 @@ Bar widget for [Omarchy](https://omarchy.org/) that plays a SomaFM station throu
 - Volume and audio output are remembered between sessions.
 - A hidden **Fun** mode raises the Omarchy screensaver and glitches the audio along with it — see [Hidden: Fun](#hidden-fun-glitch--screensaver).
 
-Every PipeWire sink shows up in the **Output** list of the card, so the stream can go to the built-in speakers, headphones or a network device such as an AirPlay speaker (Sonos, HomePod, Apple TV). AirPlay 2 receivers configured in `airplay.json` also appear as a dedicated **AirPlay 2 (<name>)** output. Selecting a row switches playback immediately while the stream keeps playing.
+The **Output** list hides disconnected ports, including unused HDMI/DisplayPort routes. Built-in speakers and usable devices whose drivers do not report connection availability stay visible. The list refreshes when the popup opens. AirPlay 2 receivers configured in `airplay.json` also appear as a dedicated **AirPlay 2 (<name>)** output. Selecting a row switches playback immediately while the stream keeps playing.
 
 ## Requirements
 
@@ -96,7 +96,7 @@ Playback volume and audio output live outside the repository and are stored per 
 The **Output** list in the popup card picks the PipeWire sink. The same switch works headlessly with the `player` script in this folder:
 
 ```bash
-./player outputs     # id + label of every PipeWire sink
+./player outputs     # id + label of available audio outputs
 ./player output <id> # switch, e.g. ./player output alsa_output.pci-0000_00_1b.0.analog-stereo
 ./player output      # go back to the system default
 ```

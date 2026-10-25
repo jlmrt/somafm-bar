@@ -49,6 +49,32 @@ class PlayerBehaviorTests(unittest.TestCase):
         self.assertEqual([o["label"] for o in outputs], names)
         self.assertEqual(outputs[0]["description"], prefix + "HDMI 3")
 
+    def test_disconnected_ports_are_hidden_and_reappear_when_connected(self):
+        sinks = [
+            {"name": "hdmi", "description": "HDMI 1", "active_port": "hdmi-port",
+             "ports": [{"name": "hdmi-port", "availability": "not available"}]},
+            {"name": "speaker", "description": "Speaker", "active_port": "speaker-port",
+             "ports": [{"name": "speaker-port", "availability": "availability unknown"}]},
+            {"name": "headphones", "description": "Headphones", "active_port": "headphone-port",
+             "ports": [{"name": "headphone-port", "availability": "available"}]},
+            {"name": "bluetooth", "description": "Bluetooth speaker", "state": "SUSPENDED", "ports": []},
+            {"name": "unplugged", "description": "Unplugged",
+             "ports": [{"name": "other-port", "availability": "not available"}]},
+            {"name": "inactive-port", "description": "Inactive port", "active_port": "unplugged-port",
+             "ports": [{"name": "unplugged-port", "availability": "not available"},
+                       {"name": "other-port", "availability": "available"}]},
+        ]
+        self.env["SOMA_TEST_SINKS"] = json.dumps(sinks)
+        pactl = self.bin / "pactl"
+        pactl.write_text('#!/usr/bin/env python3\nimport os\nprint(os.environ["SOMA_TEST_SINKS"])\n')
+        pactl.chmod(0o700)
+        self.assertEqual([o["id"] for o in self.action("outputs")["outputs"]],
+                         ["speaker", "headphones", "bluetooth"])
+        sinks[0]["ports"][0]["availability"] = "available"
+        self.env["SOMA_TEST_SINKS"] = json.dumps(sinks)
+        self.assertEqual([o["id"] for o in self.action("outputs")["outputs"]],
+                         ["hdmi", "speaker", "headphones", "bluetooth"])
+
     def prepare_fake_player(self):
         self.env["SOMA_TEST_MPV_ARGS"] = str(self.base / "mpv-args.json")
         self.env["SOMA_TEST_COMMANDS"] = str(self.base / "commands.jsonl")

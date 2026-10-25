@@ -607,9 +607,19 @@ list_outputs() {
     exit 3
   fi
   printf '%s' "$sinks" | jq -c --argjson airplay "$(airplay_targets_json)" '
+    def connected:
+      (.ports // []) as $ports
+      | (.active_port // "") as $active
+      | [$ports[] | select(.name == $active)] as $selected
+      | if ($selected | length) > 0 then
+          $selected[0].availability != "not available"
+        elif ($ports | length) > 0 then
+          any($ports[]; .availability != "not available")
+        else true end;
     ($airplay | map(.id)) as $airplay_ids
     | [
         .[] | select(type == "object" and (.name | type == "string"))
+        | select(connected)
         | .name as $id
         | select($id | test("^([A-Za-z0-9._:+-]{1,160})$"))
         | select(($airplay_ids | index($id)) | not)

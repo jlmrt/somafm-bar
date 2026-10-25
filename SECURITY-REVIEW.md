@@ -66,3 +66,12 @@ Run `python3 tests/security.py` for isolated catalog download/cache regression
 tests. Also checked Bash syntax, Lua syntax, QML parsing, Git object integrity,
 and Omarchy manifest validation. Playback and shell integration results are
 reported separately at installation time.
+
+Installation verification on 2026-10-25: six regression tests passed. Installed
+and enabled from `https://github.com/jlmrt/somafm-bar.git` in the left bar section.
+The live catalog returned 51 stations, and the shell successfully opened and
+closed the widget. At code revision
+`70fa4cc17625a24d3208e596aa57acd1d03917ce`, a zero-volume test confirmed decoded
+HTTPS audio, track metadata, pause, resume, and stop. Original volume was restored
+and playback left stopped. The installed code matched the Projects checkout.
+The shell configuration was backed up before installation.

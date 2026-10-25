@@ -49,6 +49,21 @@ omarchy plugin enable io.github.ltillegal.somafm-bar
 
 The plugin id must match the directory name (`io.github.ltillegal.somafm-bar`), which is what `omarchy plugin add` does for you.
 
+### Developing this fork
+
+The working repository is `~/Projects/somafm-bar`; `origin` points to
+`jlmrt/somafm-bar` and `upstream` to `ltillegal/somafm-bar`. The installed plugin
+is a separate checkout. After testing, committing, and pushing changes to
+`origin/main`, apply them with:
+
+```bash
+omarchy plugin update io.github.ltillegal.somafm-bar
+```
+
+This pulls from your fork and hot-reloads the plugin. Run
+`python3 tests/security.py` from the working repository to check the catalog
+limits and first-run status behavior.
+
 ## Uninstall
 
 ```bash

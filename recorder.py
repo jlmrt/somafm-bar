@@ -40,7 +40,7 @@ def synchsafe(value):
 
 def id3_tag(title, station):
     artist, separator, song = title.partition(" - ")
-    fields = {"TIT2": song if separator else title or "Unknown track", "TALB": station}
+    fields = {"TIT2": song if separator else title or "Unknown track", "TALB": station, "TCON": "SomaFM"}
     if separator:
         fields["TPE1"] = artist
     frames = b""
@@ -166,8 +166,25 @@ def frame_size(data, codec):
     return (144000 if version == 3 else 72000) * rates[rate] // sample_rate + ((data[2] >> 1) & 1)
 
 
+def frame_seconds(data, codec):
+    """Duration of a validated frame, independent of bitrate or wall-clock speed."""
+    if codec == "aac":
+        sample_rate = (96000, 88200, 64000, 48000, 44100, 32000, 24000,
+                       22050, 16000, 12000, 11025, 8000, 7350)[(data[2] >> 2) & 15]
+        return 1024 * (1 + (data[6] & 3)) / sample_rate
+    version = (data[1] >> 3) & 3
+    sample_rate = (44100, 48000, 32000)[(data[2] >> 2) & 3] // {3: 1, 2: 2, 0: 4}[version]
+    return (1152 if version == 3 else 576) / sample_rate
+
+
+def is_announcement(title):
+    artist = clean_text(title).partition(" - ")[0]
+    return bool(re.match(r"(?:big[\s_-]*url\b|somafm\b|(?:https?://)?(?:www\.)?somafm\.com(?:[/\s]|$))",
+                         artist, re.IGNORECASE))
+
+
 class Songs:
-    def __init__(self, directory, station, codec, report, budget=None):
+    def __init__(self, directory, station, codec, report, budget=None, min_seconds=30):
         self.directory, self.station, self.codec, self.report = directory, station, codec, report
         self.buffer = bytearray()
         self.offset = 0
@@ -182,6 +199,8 @@ class Songs:
         self.capture = False
         self.budget = budget
         self.file_bytes = 0
+        self.duration = 0
+        self.min_seconds = min_seconds
 
     def write(self, data):
         if self.budget:
@@ -217,11 +236,14 @@ class Songs:
                 if title != self.title:
                     self.finish()
                     self.title = title
-                    self.capture = True
+                    self.capture = not is_announcement(title)
+                    if not self.capture:
+                        self.report(starting=False, waiting=True, title=title, file="")
             if not self.capture:
                 position += size
                 continue
             if self.file is None:
+                self.duration = 0
                 self.started = datetime.now().strftime("%Y-%m-%d %H%M%S")
                 self.file = tempfile.NamedTemporaryFile(mode="w+b", prefix=".recording-", suffix=".part." + self.codec,
                                                        dir=self.directory, delete=False)
@@ -229,6 +251,7 @@ class Songs:
                 self.write(id3_tag(self.title, self.station))
                 self.report(starting=False, waiting=False, title=self.title, file=str(self.path))
             self.write(self.buffer[position:position + size])
+            self.duration += frame_seconds(self.buffer[position:position + 7], self.codec)
             self.frames += 1
             position += size
         del self.buffer[:position]
@@ -236,6 +259,9 @@ class Songs:
 
     def finish(self):
         if self.file is None:
+            return
+        if self.duration < self.min_seconds:
+            self.discard()
             return
         self.file.flush()
         os.fsync(self.file.fileno())
@@ -255,6 +281,7 @@ class Songs:
             raise RuntimeError("Too many recordings with the same filename.")
         self.path.unlink()
         self.file_bytes = 0
+        self.duration = 0
         self.saved += 1
         self.report(file=str(target), saved=self.saved)
 
@@ -345,7 +372,7 @@ class Recorder:
                         error="Recording was interrupted. The unfinished song was discarded.")
         return {"active": False, "starting": False, "error": "", **self.state}
 
-    def start(self, url, station):
+    def start(self, url, station, previous=None):
         if self.tracked_pid():
             return self.status()
         if urlsplit(url).scheme not in ("http", "https"):
@@ -361,6 +388,8 @@ class Recorder:
         Budget(directory, read_json(Path(__file__).with_name("config.json"))).check(TAG_SIZE)
         self.state = {"active": True, "starting": True, "directory": str(directory), "file": "",
                       "title": "", "saved": 0, "waiting": True, "url": url, "station": station, "error": ""}
+        if previous:
+            self.state.update(saved=previous.get("saved", 0), bytes=previous.get("bytes", 0))
         # The worker takes recorder.lock before writing; publish its PID and initial state first.
         child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_run", url, station,
                                   str(directory)], stdin=subprocess.DEVNULL,
@@ -386,6 +415,12 @@ class Recorder:
                 raise RuntimeError("Recording is still finishing. Try Stop recording again.")
         return self.status()
 
+    def reload(self):
+        if not self.tracked_pid():
+            return self.status()
+        previous = self.stop()
+        return self.start(previous["url"], previous["station"], previous=previous)
+
     def source(self, fallback_url, fallback_station):
         config = read_json(Path(__file__).with_name("config.json"))
         data_root = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
@@ -405,6 +440,9 @@ class Recorder:
     def run(self, url, station, directory):
         config = read_json(Path(__file__).with_name("config.json"))
         budget = Budget(Path(directory), config)
+        minimum = config.get("recordingMinSongSeconds", 30)
+        if isinstance(minimum, bool) or not isinstance(minimum, (int, float)) or minimum < 0:
+            minimum = 30
         songs = None
         error = ""
 
@@ -420,6 +458,7 @@ class Recorder:
         try:
             with self.lock():
                 self.state = read_json(self.state_path)
+            budget.used = self.state.get("bytes", 0)
             while True:
                 budget.check(TAG_SIZE)
                 selected_url, name = self.source(url, station)
@@ -440,7 +479,7 @@ class Recorder:
                             changes["saved"] = self.state.get("saved", 0) + 1
                         self.report(**changes, bytes=budget.used)
 
-                    songs = Songs(destination, name, codec, report, budget)
+                    songs = Songs(destination, name, codec, report, budget, min_seconds=minimum)
                     while True:
                         remaining = interval
                         while remaining:
@@ -497,10 +536,12 @@ def main():
                 state = recorder.start(sys.argv[2], clean_text(sys.argv[3]))
             elif action == "stop":
                 state = recorder.stop()
+            elif action == "reload":
+                state = recorder.reload()
             elif action == "status":
                 state = recorder.status()
             else:
-                raise RuntimeError("Use record start, stop, or status.")
+                raise RuntimeError("Use record start, stop, status, or reload.")
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as failure:
             if not recorder.tracked_pid():
                 recorder.report(active=False, starting=False, error=clean_text(failure))

@@ -4,6 +4,7 @@
 import http.server
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -31,7 +32,7 @@ class SongTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         self.events = []
-        self.songs = recorder.Songs(self.directory, "Station", "mp3", lambda **state: self.events.append(state))
+        self.songs = recorder.Songs(self.directory, "Station", "mp3", lambda **state: self.events.append(state), min_seconds=0)
         self.addCleanup(self.songs.discard)
 
     def test_skip_first_song_and_discard_last_incomplete_song(self):
@@ -85,7 +86,7 @@ class SongTests(unittest.TestCase):
         self.assertEqual(len({p.name for p in files}), 4)
 
     def test_aac_frames_are_saved_without_metadata_bytes(self):
-        songs = recorder.Songs(self.directory, "Station", "aac", lambda **state: None)
+        songs = recorder.Songs(self.directory, "Station", "aac", lambda **state: None, min_seconds=0)
         self.addCleanup(songs.discard)
         songs.metadata("First")
         songs.metadata("Second")
@@ -103,6 +104,54 @@ class SongTests(unittest.TestCase):
         self.assertNotIn("/", label)
         self.assertNotIn("\x00", label)
         self.assertLessEqual(len(label.encode()), 160)
+
+    def test_announcements_are_skipped_without_creating_files(self):
+        self.songs.metadata("Initial")
+        for title in ("Big Url: - Groove Salad, Listener Supported", "SomaFM Begathon - Please keep us on the air",
+                      "https://somafm.com/support/"):
+            self.songs.metadata(title)
+            self.songs.feed(MP3 * 1500)
+            self.assertEqual(list(self.directory.iterdir()), [])
+        self.songs.metadata("Artist - Music resumes")
+        self.songs.feed(MP3 * 5)
+        self.songs.metadata("Artist - Following")
+        self.songs.feed(MP3)
+        self.songs.discard()
+        files = list(self.directory.iterdir())
+        self.assertEqual(len(files), 1)
+        self.assertIn("Music resumes", files[0].name)
+        self.assertEqual(self.songs.saved, 1)
+        self.assertFalse(recorder.is_announcement("Soma - Song"))
+        self.assertFalse(recorder.is_announcement("Artist - SomaFM is great"))
+
+    def test_short_clips_are_discarded_and_long_songs_kept_for_both_codecs(self):
+        for codec, frame in (("mp3", MP3), ("aac", AAC)):
+            with self.subTest(codec=codec):
+                directory = self.directory / codec
+                directory.mkdir()
+                budget = recorder.Budget(directory, {})
+                budget.check = lambda additional=0: None
+                songs = recorder.Songs(directory, "Station", codec, lambda **state: None, budget)
+                songs.metadata("Initial")
+                songs.metadata("Artist - Short interlude")
+                songs.feed(frame * math.floor(20 / recorder.frame_seconds(frame, codec)))
+                songs.metadata("Artist - Whole song")
+                songs.feed(frame * math.ceil(31 / recorder.frame_seconds(frame, codec)))
+                songs.metadata("Artist - Following")
+                songs.feed(frame)
+                songs.discard()
+                files = list(directory.iterdir())
+                self.assertEqual(len(files), 1)
+                self.assertIn("Whole song", files[0].name)
+                self.assertEqual(budget.used, files[0].stat().st_size)
+                self.assertEqual(songs.saved, 1)
+
+    def test_audio_duration_is_independent_of_bitrate(self):
+        low_rate = b"\xff\xfb\x10\0"
+        self.assertNotEqual(recorder.frame_size(low_rate, "mp3"), recorder.frame_size(MP3, "mp3"))
+        self.assertAlmostEqual(recorder.frame_seconds(low_rate, "mp3"), 1152 / 44100)
+        self.assertAlmostEqual(recorder.frame_seconds(MP3, "mp3"), 1152 / 44100)
+        self.assertAlmostEqual(recorder.frame_seconds(AAC, "aac"), 1024 / 44100)
 
     def test_quota_discards_partial_and_keeps_completed_songs(self):
         budget = recorder.Budget(self.directory, {})
@@ -215,7 +264,7 @@ class RecordingIntegrationTests(unittest.TestCase):
         shutil.copy2(ROOT / "recorder.py", self.script)
         for name in ("player", "player-status.lua"):
             shutil.copy2(ROOT / name, self.base / name)
-        self.config = {"station": "Test station", "recordingQuotaMiB": 20,
+        self.config = {"station": "Test station", "recordingQuotaMiB": 20, "recordingMinSongSeconds": 0,
                        "recordingReserveMiB": 16, "recordingReservePercent": 1}
         self.stream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), StreamHandler)
         self.stream.audio, self.stream.codec = self.audio["mp3"], "mp3"
@@ -283,6 +332,8 @@ class RecordingIntegrationTests(unittest.TestCase):
         info = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format_tags:stream=codec_name", "-of", "json", str(song)]))
         self.assertEqual(info["format"]["tags"]["title"], "Jóga")
         self.assertEqual(info["format"]["tags"]["artist"], "Björk")
+        self.assertEqual(info["format"]["tags"]["album"], "Test station")
+        self.assertEqual(info["format"]["tags"]["genre"], "SomaFM")
         self.assertEqual(info["streams"][0]["codec_name"], "mp3")
         self.assertEqual(self.state()["saved"], 1)
         subprocess.run(["ffmpeg", "-v", "error", "-i", str(song), "-f", "null", "-"], capture_output=True, check=True)
@@ -305,6 +356,42 @@ class RecordingIntegrationTests(unittest.TestCase):
         self.assertEqual(list(self.music.rglob(".recording-*")), [])
         self.assertFalse((self.runtime / "mpvd.sock").exists())
         self.next_song("Artist - Other station song")
+        self.next_song("Artist - Following")
+        self.wait_for(lambda: len(self.completed()) == 2)
+        self.assertEqual(self.state()["saved"], 2)
+
+    def test_announcements_and_short_clips_are_filtered_in_a_live_stream(self):
+        self.config["recordingMinSongSeconds"] = 0.4
+        self.save_config()
+        self.start()
+        self.next_song("Artist - Tiny interlude")
+        self.stream.title = "Big Url: - You're listening to Groove Salad"
+        self.wait_for(lambda: self.state().get("waiting") and self.state().get("title", "").startswith("Big Url:"))
+        self.assertEqual(self.completed(), [])
+        self.assertEqual(list(self.music.rglob(".recording-*")), [])
+        self.next_song("Artist - Full song")
+        time.sleep(0.5)
+        self.next_song("Artist - Following")
+        self.wait_for(lambda: len(self.completed()) == 1)
+        self.assertIn("Full song", self.completed()[0].name)
+        self.assertEqual(self.state()["saved"], 1)
+
+    def test_reload_preserves_saved_songs_and_session_quota_usage(self):
+        self.start()
+        self.next_song("Artist - Completed")
+        time.sleep(0.2)
+        self.next_song("Artist - In progress")
+        self.wait_for(lambda: len(self.completed()) == 1)
+        saved_bytes = self.completed()[0].stat().st_size
+        old_pid = recorder.read_json(self.runtime / "recorder.pid")["pid"]
+        state = self.player_action("record", "reload")
+        self.assertTrue(state["active"])
+        self.assertEqual(state["saved"], 1)
+        self.assertEqual(state["bytes"], saved_bytes)
+        self.assertNotEqual(recorder.read_json(self.runtime / "recorder.pid")["pid"], old_pid)
+        self.wait_for(lambda: not self.state().get("starting"))
+        self.assertEqual(list(self.music.rglob(".recording-*")), [])
+        self.next_song("Artist - After update")
         self.next_song("Artist - Following")
         self.wait_for(lambda: len(self.completed()) == 2)
         self.assertEqual(self.state()["saved"], 2)
@@ -339,6 +426,8 @@ class RecordingIntegrationTests(unittest.TestCase):
         self.assertEqual(song.suffix, ".aac")
         codec = subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(song)], text=True).strip()
         self.assertEqual(codec, "aac")
+        tags = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format_tags", "-of", "json", str(song)]))["format"]["tags"]
+        self.assertEqual(tags["genre"], "SomaFM")
 
     def test_no_metadata_reports_error_without_saving_audio(self):
         self.config["url"] = self.url.replace("/stream", "/no-metadata")

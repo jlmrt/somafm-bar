@@ -4,6 +4,20 @@ All notable changes to SomaFM Bar. The format is loosely based on
 [Keep a Changelog](https://keepachangelog.com/), and versions follow the plugin
 manifest's `version` field.
 
+## [1.11.2]
+
+### Added
+
+- Recordings carry **Genre: SomaFM**, allowing music libraries and iPods to
+  group them by source. The station remains the album; artist and title retain
+  the streamed song information.
+- **Announcement filtering.** Skip Big Url and SomaFM station IDs, fundraising
+  messages, and clips shorter than 30 seconds. `recordingMinSongSeconds` sets the
+  duration threshold, measured from audio frames for MP3 and AAC.
+- `./player record reload` applies recorder updates while keeping recording
+  enabled, the completed-song count, and the session's quota usage. It discards
+  the unfinished song and waits for the next full song.
+
 ## [1.11.1]
 
 ### Fixed

@@ -868,8 +868,8 @@ case "$action" in
   record)
     case "${2:-status}" in
       start) recording_command start "$(station_url)" "$(station_name)" ;;
-      stop|status) recording_command "${2:-status}" ;;
-      *) echo 'Use record start, stop, or status' >&2; exit 2 ;;
+      stop|status|reload) recording_command "${2:-status}" ;;
+      *) echo 'Use record start, stop, status, or reload' >&2; exit 2 ;;
     esac
     ;;
   stations)

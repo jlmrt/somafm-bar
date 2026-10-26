@@ -84,14 +84,16 @@ Edit `config.json` in the plugin folder and then use **Stop** and **Play** (or r
   "url": "https://ice6.somafm.com/bossa-128-mp3",
   "recordingQuotaMiB": 20480,
   "recordingReserveMiB": 5120,
-  "recordingReservePercent": 5
+  "recordingReservePercent": 5,
+  "recordingMinSongSeconds": 30
 }
 ```
 
 - `station` — the name shown in the widget tooltip when nothing is playing.
 - `url` — a direct SomaFM stream URL. Channel names map to `https://ice2.somafm.com/<channel>-128-mp3`, for example `groovesalad`, `dronezone`, `indiepop`, `secretagent`, `defcon`, `thetrip`, `sonicuniverse`, `u80s`, `fluid`, `beatblender`, `cliqhop`, `dubstep`, `space-station-soma`, `metal`, `covers`, `folkfwd`, `left coast 70s`, `piano bar`, `voodooclub`.
 - `recordingQuotaMiB` — maximum recording size per session, including the current song; defaults to 20480 MiB (20 GiB). Stopping and starting recording begins a new session.
-- `recordingReserveMiB` / `recordingReservePercent` — recording stops before disk free space falls below the larger of these reserves. Defaults to 5120 MiB (5 GiB) or 5% of the filesystem. Limits are checked throughout recording, including while waiting for playback. Changes apply to the next recording session.
+- `recordingMinSongSeconds` — discard clips shorter than this duration; defaults to 30 seconds. Big Url and SomaFM announcements are also filtered by title, regardless of length. Set to `0` to keep short music clips while still skipping named announcements.
+- `recordingReserveMiB` / `recordingReservePercent` — recording stops before disk free space falls below the larger of these reserves. Defaults to 5120 MiB (5 GiB) or 5% of the filesystem. Limits are checked throughout recording. Changes apply to the next recording session or recorder reload.
 
 Playback volume and audio output live outside the repository and are stored per user:
 
@@ -104,7 +106,9 @@ Open the popup and press **Record** to record the selected station, including
 when playback is stopped or paused. Songs are saved
 to the Music library returned by `xdg-user-dir MUSIC` (normally `~/Music`), under
 `SomaFM/<station>/`. Filenames include the recording time and the streamed track
-title; artist, title, and station tags are embedded in each file. Existing files
+title. Tags preserve the song's **Artist** and **Title**, store the station as
+**Album**, and set **Genre** to **SomaFM** so recordings can be grouped by source
+in a music library or on an iPod after syncing. Existing files
 are never overwritten.
 
 Only complete songs are kept. Recording waits for the next song after you enable
@@ -112,6 +116,10 @@ it, reconnect, or change stations. A file is published when the following song's
 metadata arrives. Pressing **Stop recording**, reaching a quota or disk reserve,
 or changing stations discards the unfinished song, keeping completed songs.
 Temporary files are hidden while a song is being recorded.
+
+Big Url and SomaFM announcements, including station IDs and fundraising appeals,
+are skipped. Clips shorter than `recordingMinSongSeconds` (30 seconds by default)
+are discarded when the next track arrives, and never enter the saved-song count.
 
 Playback and recording work independently. You can press **Stop playback** or
 pause listening while recording continues uninterrupted, and start listening
@@ -132,6 +140,7 @@ report an error.
 ./player record start   # records the selected station, with or without playback
 ./player record stop    # keeps complete songs; discards the current song
 ./player record status  # JSON status, saved-song count, and destination
+./player record reload  # apply recorder updates; keep the session quota/count
 ```
 
 Recorder process state and `recording.json` live in `$XDG_RUNTIME_DIR/somafm-bar/`.

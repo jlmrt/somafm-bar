@@ -3,5 +3,6 @@
   "url": "https://ice6.somafm.com/bossa-128-mp3",
   "recordingQuotaMiB": 20480,
   "recordingReserveMiB": 5120,
-  "recordingReservePercent": 5
+  "recordingReservePercent": 5,
+  "recordingMinSongSeconds": 30
 }
